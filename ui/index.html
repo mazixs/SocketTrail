@@ -1,0 +1,731 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SocketTrail</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='14' fill='%230f1115'/%3E%3Cpath d='M6 20h6l4-9 4 14 3-5h3' stroke='%237aa2f7' stroke-width='2.4' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+<style>
+:root{
+  --bg:#0f1115;--panel:#161a21;--panel2:#1c2129;--line:#2a313c;--txt:#e6e9ef;--dim:#9aa4b2;
+  --accent:#7aa2f7;--ok:#7bd88f;--warn:#e0af68;--hot:#f7768e;--cdn:#bb9af7;
+  /* текст поверх заливки акцентом: акцент светлый -> текст темный */
+  --on-accent:#0d1117;--on-hot:#1a0d10;--sel-bg:rgba(122,162,247,.16);--radius:10px;
+}
+@media (prefers-color-scheme:light){:root{
+  --bg:#f6f7f9;--panel:#fff;--panel2:#eef1f5;--line:#d8dee8;--txt:#1a1d23;--dim:#5b6472;
+  --accent:#2f5fd0;--ok:#1a7f45;--warn:#8a5a00;--hot:#c0324a;--cdn:#6b3fa0;
+  /* в светлой теме акцент темный -> текст белый, иначе синее на черном сливается */
+  --on-accent:#ffffff;--on-hot:#ffffff;--sel-bg:rgba(47,95,208,.12);
+}}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{margin:0;background:var(--bg);color:var(--txt);overflow:hidden;
+ font:14px/1.5 -apple-system,"Segoe UI",Roboto,Arial,sans-serif}
+.mono{font-family:ui-monospace,Menlo,Consolas,monospace}
+.app{display:grid;grid-template-columns:var(--aside,320px) 1fr;grid-template-rows:auto 1fr;height:100%}
+
+header{grid-column:1/3;display:flex;align-items:center;gap:14px;padding:10px 16px;
+ background:var(--panel);border-bottom:1px solid var(--line)}
+.logo{font-weight:650;letter-spacing:-.02em;font-size:16px;display:flex;align-items:center;gap:8px}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--ok);box-shadow:0 0 0 3px rgba(123,216,143,.15)}
+.dot.off{background:var(--hot);box-shadow:0 0 0 3px rgba(247,118,142,.15)}
+.stats{display:flex;gap:16px;color:var(--dim);font-size:12.5px;white-space:nowrap}
+.stats b{color:var(--txt);font-weight:600}
+.spacer{flex:1}
+button{font:inherit;color:var(--txt);background:var(--panel2);border:1px solid var(--line);
+ border-radius:8px;padding:6px 13px;cursor:pointer;transition:border-color .12s,color .12s,background .12s}
+button:hover{border-color:var(--accent);color:var(--accent)}
+button.primary{background:var(--accent);border-color:var(--accent);color:var(--on-accent);font-weight:600}
+button.primary:hover{background:var(--accent);color:var(--on-accent);filter:brightness(1.08)}
+button.rec{background:var(--hot);border-color:var(--hot);color:var(--on-hot);font-weight:600}
+button.rec:hover{color:var(--on-hot);filter:brightness(1.08)}
+label.chk{display:flex;align-items:center;gap:6px;color:var(--dim);font-size:12.5px;cursor:pointer;
+ white-space:nowrap;user-select:none}
+label.chk:hover{color:var(--txt)}
+
+aside{border-right:1px solid var(--line);background:var(--panel);display:flex;flex-direction:column;
+ min-height:0;position:relative}
+.aside-grip{position:absolute;top:0;right:-3px;width:6px;height:100%;cursor:col-resize;z-index:5}
+.aside-grip:hover{background:var(--accent);opacity:.35}
+.search{margin:10px;padding:7px 11px;background:var(--panel2);border:1px solid var(--line);
+ border-radius:8px;color:var(--txt);font:inherit;outline:none;min-width:0}
+.search:focus{border-color:var(--accent)}
+.filters{display:flex;gap:6px;padding:0 10px 8px;flex-wrap:wrap}
+.filters button{padding:4px 10px;font-size:12px;border-radius:999px}
+.filters button.on{background:var(--accent);border-color:var(--accent);color:var(--on-accent);font-weight:600}
+.plist{overflow-y:auto;flex:1;padding:0 6px 10px}
+.proc{display:flex;align-items:center;gap:6px;padding:6px 8px;border-radius:8px;cursor:pointer}
+.proc:hover{background:var(--panel2)}
+.proc.sel{background:var(--sel-bg);box-shadow:inset 2px 0 0 var(--accent)}
+.proc.faint .nm{color:var(--dim)}
+.proc .nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.proc .pid{color:var(--dim);font-size:12px;font-family:ui-monospace,Menlo,Consolas,monospace}
+.twist{width:14px;flex:none;color:var(--dim);font-size:10px;text-align:center;cursor:pointer;
+ user-select:none;transition:transform .12s}
+.twist:hover{color:var(--accent)}
+.twist.leaf{visibility:hidden}
+.led{width:6px;height:6px;border-radius:50%;background:var(--line);flex:none}
+.led.on{background:var(--ok)}
+.badge{flex:none;font-size:11px;padding:0 6px;border-radius:999px;background:var(--panel2);
+ border:1px solid var(--line);color:var(--dim)}
+.badge.live{border-color:transparent;background:rgba(123,216,143,.18);color:var(--ok);font-weight:600}
+.tag{display:inline-block;padding:1px 7px;border-radius:999px;font-size:10.5px;font-weight:700;
+ letter-spacing:.03em;white-space:nowrap}
+.t-proton{background:rgba(187,154,247,.18);color:var(--cdn)}
+.ghost{background:rgba(187,154,247,.16);color:var(--cdn)}
+
+main{display:flex;flex-direction:column;min-width:0;min-height:0}
+.warn{padding:10px 14px;background:color-mix(in srgb,var(--warn) 14%,var(--panel));
+ border-bottom:1px solid var(--line);border-left:3px solid var(--warn);font-size:13px}
+.warn b{color:var(--warn)}
+.warn pre{margin:6px 0 0;font-family:ui-monospace,monospace;font-size:12px;color:var(--dim);white-space:pre-wrap}
+.bar{display:flex;align-items:center;gap:10px;padding:9px 14px;border-bottom:1px solid var(--line);
+ background:var(--panel);flex-wrap:wrap}
+.seg{display:flex;border:1px solid var(--line);border-radius:8px;overflow:hidden;flex:none}
+.seg button{border:0;border-radius:0;padding:5px 12px;font-size:12.5px;background:transparent}
+.seg button.on{background:var(--accent);color:var(--on-accent);font-weight:600}
+.seg button.on:hover{color:var(--on-accent)}
+
+.dumps{padding:10px 14px;border-bottom:1px solid var(--line);background:var(--panel);font-size:13px}
+.dumps .path{display:flex;align-items:center;gap:8px;margin-bottom:8px}
+.dumps .path code{background:var(--panel2);border:1px solid var(--line);border-radius:6px;
+ padding:3px 8px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12.5px}
+.dumps table{min-width:0;width:auto;table-layout:auto}
+.dumps td{padding:3px 14px 3px 0;border:0;color:var(--dim)}
+.dumps td.f{color:var(--txt);font-family:ui-monospace,Menlo,Consolas,monospace}
+.tbl{overflow:auto;flex:1;position:relative}
+table{width:100%;min-width:1040px;border-collapse:separate;border-spacing:0;font-size:13px;table-layout:fixed}
+th{position:sticky;top:0;z-index:2;background:var(--panel2);text-align:left;padding:8px 11px;
+ font-size:11px;font-weight:600;color:var(--dim);text-transform:uppercase;letter-spacing:.05em;
+ border-bottom:1px solid var(--line);white-space:nowrap;position:sticky;user-select:none}
+th .grip{position:absolute;top:0;right:0;width:7px;height:100%;cursor:col-resize}
+th .grip:hover{background:var(--accent);opacity:.4}
+td{padding:7px 11px;border-bottom:1px solid var(--line);white-space:nowrap;vertical-align:middle;
+ overflow:hidden;text-overflow:ellipsis}
+tr.dead td{opacity:.55}
+tbody tr:hover td{background:var(--panel)}
+.ip{color:var(--accent);font-weight:600}
+.st{font-size:11px;font-weight:700;padding:1px 7px;border-radius:999px;white-space:nowrap}
+.st.ESTABLISHED,.st.ACTIVE,.st.live{background:rgba(123,216,143,.16);color:var(--ok)}
+.st.CLOSED,.st.TIME_WAIT,.st.CLOSE_WAIT,.st.FIN_WAIT1,.st.FIN_WAIT2,.st.LAST_ACK,.st.gone
+ {background:rgba(154,164,178,.16);color:var(--dim)}
+.st.SYN_SENT,.st.NEW{background:rgba(224,175,104,.16);color:var(--warn)}
+.copy{opacity:0;border:0;background:transparent;color:var(--dim);cursor:pointer;padding:0 4px;
+ font-size:12px;line-height:1}
+tr:hover .copy{opacity:1}
+.copy:hover{color:var(--accent)}
+.cell{display:flex;align-items:center;gap:6px;min-width:0}
+.cell span.txt{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.empty{padding:60px 20px;text-align:center;color:var(--dim)}
+.empty h3{color:var(--txt);margin:0 0 6px;font-weight:600}
+.toast{position:fixed;right:18px;bottom:18px;background:var(--panel);border:1px solid var(--line);
+ border-left:3px solid var(--ok);border-radius:8px;padding:11px 15px;max-width:520px;
+ box-shadow:0 8px 28px rgba(0,0,0,.28);opacity:0;transform:translateY(8px);transition:.18s;
+ pointer-events:none;z-index:20}
+.toast.show{opacity:1;transform:none}
+.rec-pill{display:flex;align-items:center;gap:7px;color:var(--hot);font-size:12.5px;font-weight:600}
+.rec-pill .dot{background:var(--hot);animation:pulse 1.1s infinite}
+@keyframes pulse{50%{opacity:.25}}
+::-webkit-scrollbar{width:10px;height:10px}
+::-webkit-scrollbar-thumb{background:var(--line);border-radius:6px}
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <div class="logo"><span class="dot" id="capled"></span>SocketTrail</div>
+    <div class="stats">
+      <span id="s-matched-wrap">в выборке <b id="s-matched">0</b></span>
+      <span>в истории <b id="s-stored">0</b></span>
+      <span>пакетов <b id="s-pkts">0</b></span>
+      <span>интерфейс <b id="s-if">-</b></span>
+    </div>
+    <div class="spacer"></div>
+    <div id="recpill" class="rec-pill" style="display:none"><span class="dot"></span><span id="rectime">00:00</span></div>
+    <label class="chk"><input type="checkbox" id="onlyproc" checked> дамп только по адресам процесса</label>
+    <button id="btn-dump" class="primary">Собрать дамп</button>
+    <button id="btn-folder" title="Показать папку с дампами">Дампы</button>
+    <button id="btn-copy" title="Скопировать показанную таблицу как TSV">Копировать</button>
+    <button id="btn-html">Отчет</button>
+    <button id="btn-export">JSON</button>
+    <button id="btn-clear">Очистить</button>
+  </header>
+
+  <aside>
+    <input class="search" id="q" placeholder="Поиск процесса: имя, PID, аргументы">
+    <div class="filters">
+      <button data-f="active" class="on">С трафиком</button>
+      <button data-f="proton">Proton</button>
+      <button data-f="all">Все</button>
+      <label class="chk" style="margin-left:auto"><input type="checkbox" id="showself"> свои</label>
+    </div>
+    <div class="plist" id="plist"></div>
+    <div class="aside-grip" id="aside-grip" title="Потяните, чтобы изменить ширину"></div>
+  </aside>
+
+  <main>
+    <div id="warn" class="warn" style="display:none"></div>
+    <div class="bar">
+      <div class="seg" id="scope">
+        <button data-s="proc" class="on">Процесс</button>
+        <button data-s="host">Весь хост</button>
+      </div>
+      <div class="seg" id="viewmode">
+        <button data-v="list" class="on">Список</button>
+        <button data-v="agg">Сводка по адресам</button>
+      </div>
+      <input class="search" id="qc" style="margin:0;flex:1;max-width:300px" placeholder="Фильтр: домен, IP, порт, ASN">
+      <label class="chk"><input type="checkbox" id="showlocal"> локальные адреса</label>
+      <label class="chk"><input type="checkbox" id="showselfc"> соединения SocketTrail</label>
+      <div class="spacer"></div>
+      <span class="stats"><span id="selinfo">процесс не выбран</span></span>
+    </div>
+    <div id="dumps" class="dumps" style="display:none"></div>
+    <div class="tbl" id="tblwrap">
+      <table id="tbl">
+        <colgroup>
+          <col data-k="time"><col data-k="state"><col data-k="dom"><col data-k="ip"><col data-k="port">
+          <col data-k="net"><col data-k="proc"><col data-k="tx"><col data-k="rx">
+        </colgroup>
+        <thead><tr>
+          <th data-k="time">Время</th><th data-k="state">Состояние</th><th data-k="dom">Домен / имя</th>
+          <th data-k="ip">Адрес</th><th data-k="port">Порт</th><th data-k="net">Владелец сети</th>
+          <th data-k="proc" id="th-proc">Процесс</th><th data-k="tx">Исх.</th><th data-k="rx">Вх.</th>
+        </tr></thead>
+        <tbody id="rows"></tbody>
+      </table>
+      <div class="empty" id="empty"><h3>Пока пусто</h3>
+        <div>Выберите процесс слева или переключитесь на весь хост.</div></div>
+    </div>
+  </main>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+const $ = s => document.querySelector(s);
+const state = {
+  selected:null, filter:'active', scope:'proc', view:'list',
+  showLocal:false, showSelf:false, dump:null, procs:[],
+  collapsed:new Set(), opened:new Set(), lastRows:[], busy:false,
+};
+
+const DEFAULT_W = {time:94,state:126,dom:230,ip:160,port:94,net:178,proc:150,tx:86,rx:86};
+
+const fmtBytes = n => !n ? '-' : n < 1024 ? n+' Б' : n < 1048576 ? (n/1024).toFixed(1)+' КБ'
+  : (n/1048576).toFixed(2)+' МБ';
+const fmtTime = ms => new Date(ms).toLocaleTimeString('ru-RU',{hour12:false});
+const esc = s => (s??'').replace(/[<>&"]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[c]));
+const plural = (n, one, few, many) => {
+  const m10 = n % 10, m100 = n % 100;
+  return n + ' ' + (m10 === 1 && m100 !== 11 ? one
+    : m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14) ? few : many);
+};
+
+// Связь с сервером: если SocketTrail закрыли, окно должно сказать об этом,
+// а не молча показывать устаревшую таблицу.
+let offline = 0;
+async function api(url, opts){
+  try {
+    const r = await fetch(url, opts);
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const data = await r.json();
+    if (offline){ offline = 0; showOffline(false); }
+    return data;
+  } catch(e) {
+    if (++offline >= 2) showOffline(true);
+    return null;
+  }
+}
+
+function showOffline(on){
+  const w = $('#warn');
+  if (on){
+    w.innerHTML = '<b>Связь с SocketTrail потеряна.</b> Программа закрыта или остановлена. '
+      + 'Данные в таблице - последние полученные. Запустите SocketTrail снова и обновите страницу.';
+    w.style.display = '';
+    w.dataset.offline = '1';
+    $('#capled').className = 'dot off';
+  } else if (w.dataset.offline){
+    delete w.dataset.offline;
+    w.style.display = 'none';
+  }
+}
+
+function toast(msg, kind){
+  const t = $('#toast');
+  t.style.borderLeftColor = kind === 'bad' ? 'var(--hot)' : 'var(--ok)';
+  t.innerHTML = msg; t.classList.add('show');
+  clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove('show'), 5200);
+}
+
+async function copy(text, what){
+  try {
+    await navigator.clipboard.writeText(text);
+    toast(`Скопировано: ${esc(what)}`);
+  } catch(e) {
+    // clipboard недоступен без защищенного контекста - запасной путь через textarea
+    const ta = document.createElement('textarea');
+    ta.value = text; document.body.appendChild(ta); ta.select();
+    document.execCommand('copy'); ta.remove();
+    toast(`Скопировано: ${esc(what)}`);
+  }
+}
+
+/* ---------- ширины колонок ---------- */
+
+function loadWidths(){
+  let saved = {};
+  try { saved = JSON.parse(localStorage.getItem('st.widths') || '{}'); } catch(e) {}
+  document.querySelectorAll('#tbl colgroup col').forEach(col => {
+    const k = col.dataset.k;
+    col.style.width = (saved[k] || DEFAULT_W[k]) + 'px';
+  });
+}
+
+function saveWidths(){
+  const w = {};
+  document.querySelectorAll('#tbl colgroup col').forEach(col => {
+    w[col.dataset.k] = parseInt(col.style.width) || DEFAULT_W[col.dataset.k];
+  });
+  try { localStorage.setItem('st.widths', JSON.stringify(w)); } catch(e) {}
+}
+
+function initResizers(){
+  document.querySelectorAll('#tbl thead th').forEach(th => {
+    const grip = document.createElement('div');
+    grip.className = 'grip';
+    grip.title = 'Потяните, чтобы изменить ширину. Двойной клик - по содержимому';
+    th.style.position = 'relative';
+    th.appendChild(grip);
+    const col = document.querySelector(`#tbl col[data-k="${th.dataset.k}"]`);
+
+    grip.addEventListener('mousedown', e => {
+      e.preventDefault(); e.stopPropagation();
+      const x0 = e.clientX, w0 = col.getBoundingClientRect().width;
+      const move = ev => { col.style.width = Math.max(56, w0 + ev.clientX - x0) + 'px'; };
+      const up = () => {
+        document.removeEventListener('mousemove', move);
+        document.removeEventListener('mouseup', up);
+        document.body.style.cursor = '';
+        saveWidths();
+      };
+      document.addEventListener('mousemove', move);
+      document.addEventListener('mouseup', up);
+      document.body.style.cursor = 'col-resize';
+    });
+
+    // двойной клик - подогнать под самое длинное значение в колонке
+    grip.addEventListener('dblclick', e => {
+      e.preventDefault(); e.stopPropagation();
+      const idx = [...th.parentNode.children].indexOf(th);
+      let max = th.scrollWidth;
+      for (const tr of $('#rows').children) {
+        const td = tr.children[idx];
+        if (td) max = Math.max(max, td.firstElementChild ? td.firstElementChild.scrollWidth + 28 : td.scrollWidth);
+      }
+      col.style.width = Math.min(620, Math.max(56, max + 24)) + 'px';
+      saveWidths();
+    });
+  });
+}
+
+function initAsideGrip(){
+  const grip = $('#aside-grip');
+  const saved = parseInt(localStorage.getItem('st.aside') || '0');
+  if (saved) document.querySelector('.app').style.setProperty('--aside', saved + 'px');
+  grip.addEventListener('mousedown', e => {
+    e.preventDefault();
+    const x0 = e.clientX;
+    const w0 = document.querySelector('aside').getBoundingClientRect().width;
+    const move = ev => {
+      const w = Math.min(640, Math.max(200, w0 + ev.clientX - x0));
+      document.querySelector('.app').style.setProperty('--aside', w + 'px');
+    };
+    const up = () => {
+      document.removeEventListener('mousemove', move);
+      document.removeEventListener('mouseup', up);
+      document.body.style.cursor = '';
+      const w = parseInt(getComputedStyle(document.querySelector('.app')).getPropertyValue('--aside'));
+      try { localStorage.setItem('st.aside', w); } catch(e) {}
+    };
+    document.addEventListener('mousemove', move);
+    document.addEventListener('mouseup', up);
+    document.body.style.cursor = 'col-resize';
+  });
+}
+
+/* ---------- дерево процессов ---------- */
+
+async function loadProcs(){
+  const url = `/api/procs?filter=${state.filter}&q=${encodeURIComponent($('#q').value)}`
+    + `&show_self=${state.showSelf ? 1 : 0}`;
+  const r = await api(url);
+  if (!r) return;
+  state.procs = r.procs;
+  state.selected = r.selected;
+  renderProcs();
+}
+
+// Строим дерево по ppid. Одноименные листья одного родителя сворачиваются в
+// одну строку: у браузеров и языковых серверов таких потомков бывают десятки.
+function buildTree(procs){
+  const byPid = new Map(procs.map(p => [p.pid, p]));
+  const kids = new Map();
+  const roots = [];
+  for (const p of procs){
+    if (byPid.has(p.ppid) && p.ppid !== p.pid) {
+      if (!kids.has(p.ppid)) kids.set(p.ppid, []);
+      kids.get(p.ppid).push(p);
+    } else roots.push(p);
+  }
+  const sort = a => a.sort((x, y) => (y.conns - x.conns) || x.name.localeCompare(y.name) || x.pid - y.pid);
+  sort(roots);
+  for (const v of kids.values()) sort(v);
+  return {kids, roots};
+}
+
+function renderProcs(){
+  const {kids, roots} = buildTree(state.procs);
+  const out = [];
+
+  const walk = (node, depth) => {
+    const children = kids.get(node.pid) || [];
+    const collapsed = state.collapsed.has(node.pid);
+    out.push(rowHtml(node, depth, children.length, collapsed));
+    if (collapsed || !children.length) return;
+
+    // группировка одноименных листьев
+    const groups = new Map();
+    for (const c of children){
+      const leaf = !(kids.get(c.pid) || []).length;
+      const key = leaf ? 'leaf:' + c.name : 'node:' + c.pid;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(c);
+    }
+    for (const [key, list] of groups){
+      if (key.startsWith('leaf:') && list.length > 2){
+        // Пачку одноименных потомков держим свернутой: у сборщика фронтенда
+        // таких бывает под две сотни, и они вытесняют из списка все остальное.
+        const gid = `g${node.pid}:${list[0].name}`;
+        const open = state.opened.has(gid);
+        out.push(groupHtml(list, depth + 1, gid, open));
+        if (open) for (const c of list) walk(c, depth + 2);
+      } else {
+        for (const c of list) walk(c, depth + 1);
+      }
+    }
+  };
+  for (const r of roots) walk(r, 0);
+
+  $('#plist').innerHTML = out.join('')
+    || '<div class="empty" style="padding:26px">Ничего не найдено</div>';
+}
+
+function rowHtml(p, depth, nkids, collapsed){
+  const sel = p.pid === state.selected ? ' sel' : '';
+  const faint = p.matched ? '' : ' faint';
+  const tw = nkids ? `<span class="twist" data-tw="${p.pid}">${collapsed ? '▶' : '▼'}</span>`
+                   : '<span class="twist leaf">•</span>';
+  const conns = p.conns ? `<span class="badge live">${p.conns}</span>`
+    : (nkids && collapsed ? `<span class="badge">${nkids}</span>` : '');
+  return `<div class="proc${sel}${faint}" data-pid="${p.pid}" title="${esc(p.cmdline || p.name)}"
+    style="padding-left:${6 + depth * 13}px">
+    ${tw}<span class="led ${p.active ? 'on' : ''}"></span>
+    <span class="nm">${esc(p.name)}</span>
+    ${p.proton ? '<span class="tag t-proton">PROTON</span>' : ''}
+    ${conns}<span class="pid">${p.pid}</span></div>`;
+}
+
+function groupHtml(list, depth, gid, open){
+  const live = list.reduce((s, p) => s + p.conns, 0);
+  return `<div class="proc faint" data-group="${esc(gid)}" style="padding-left:${6 + depth * 13}px">
+    <span class="twist" data-tw="${esc(gid)}">${open ? '▼' : '▶'}</span>
+    <span class="led ${list.some(p => p.active) ? 'on' : ''}"></span>
+    <span class="nm">${esc(list[0].name)}</span>
+    <span class="badge">×${list.length}</span>
+    ${live ? `<span class="badge live">${live}</span>` : ''}</div>`;
+}
+
+$('#plist').addEventListener('click', async e => {
+  const tw = e.target.closest('.twist');
+  if (tw && tw.dataset.tw !== undefined){
+    const raw = tw.dataset.tw;
+    if (raw.startsWith('g')){   // пачка одноименных: по умолчанию свернута
+      state.opened.has(raw) ? state.opened.delete(raw) : state.opened.add(raw);
+    } else {
+      const pid = +raw;
+      state.collapsed.has(pid) ? state.collapsed.delete(pid) : state.collapsed.add(pid);
+    }
+    renderProcs();
+    return;
+  }
+  const el = e.target.closest('.proc');
+  if (!el || !el.dataset.pid) return;
+
+  const pid = +el.dataset.pid;
+  state.selected = state.selected === pid ? null : pid;
+  // подсветка сразу, не дожидаясь ответа сервера
+  document.querySelectorAll('.proc.sel').forEach(x => x.classList.remove('sel'));
+  if (state.selected !== null) el.classList.add('sel');
+  $('#rows').innerHTML = '';
+  rowIndex.clear();
+
+  await api('/api/select', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({pid: state.selected})});
+  refresh();
+});
+
+/* ---------- таблица ---------- */
+
+const rowIndex = new Map(); // id -> {tr, sig}
+
+function listRow(c){
+  const dom = c.domain ? esc(c.domain) : '<span style="color:var(--dim)">имени нет</span>';
+  const sni = c.sni ? '<span class="tag" style="background:rgba(122,162,247,.16);color:var(--accent)">SNI</span>' : '';
+  const proc = c.pname
+    ? `${esc(c.pname)} <span class="mono" style="color:var(--dim)">${c.pid}</span>`
+    : '<span class="tag ghost">только пакеты</span>';
+  return [
+    `<td class="mono" style="color:var(--dim)">${fmtTime(c.first_seen)}</td>`,
+    `<td><span class="st ${esc(c.state)}">${esc(c.state)}</span></td>`,
+    `<td><div class="cell"><span class="txt" title="${esc(c.domain || '')}">${dom}</span>${sni}
+       <button class="copy" data-copy="${esc(c.domain || c.remote)}" title="Скопировать имя">⧉</button></div></td>`,
+    `<td><div class="cell"><span class="txt mono ip">${esc(c.remote)}</span>
+       <button class="copy" data-copy="${esc(c.remote)}" title="Скопировать адрес">⧉</button></div></td>`,
+    `<td class="mono">${c.rport} <span style="color:var(--dim);font-size:11px">${c.proto}</span></td>`,
+    `<td style="color:var(--dim)" title="${esc((c.asn || '') + ' ' + (c.owner || ''))}">${esc(c.asn || '')} ${esc(c.owner || '')}</td>`,
+    `<td>${proc}</td>`,
+    `<td class="mono">${fmtBytes(c.tx_bytes)}</td>`,
+    `<td class="mono">${fmtBytes(c.rx_bytes)}</td>`,
+  ].join('');
+}
+
+function aggRow(t){
+  const dom = t.domain ? esc(t.domain) : '<span style="color:var(--dim)">имени нет</span>';
+  const sni = t.sni ? '<span class="tag" style="background:rgba(122,162,247,.16);color:var(--accent)">SNI</span>' : '';
+  const st = t.live ? `<span class="st live">${plural(t.live, 'активное', 'активных', 'активных')}</span>`
+                    : '<span class="st gone">закрыты</span>';
+  return [
+    `<td class="mono" style="color:var(--dim)">${fmtTime(t.first_seen)}</td>`,
+    `<td>${st}</td>`,
+    `<td><div class="cell"><span class="txt" title="${esc(t.domain || '')}">${dom}</span>${sni}
+       <button class="copy" data-copy="${esc(t.domain || t.remote)}" title="Скопировать имя">⧉</button></div></td>`,
+    `<td><div class="cell"><span class="txt mono ip">${esc(t.remote)}</span>
+       <button class="copy" data-copy="${esc(t.remote)}" title="Скопировать адрес">⧉</button></div></td>`,
+    `<td class="mono">${t.rport} <span style="color:var(--dim);font-size:11px">${t.proto}</span></td>`,
+    `<td style="color:var(--dim)" title="${esc((t.asn || '') + ' ' + (t.owner || ''))}">${esc(t.asn || '')} ${esc(t.owner || '')}</td>`,
+    `<td style="color:var(--dim)">${plural(t.sessions, 'сессия', 'сессии', 'сессий')}</td>`,
+    `<td class="mono">${fmtBytes(t.tx_bytes)}</td>`,
+    `<td class="mono">${fmtBytes(t.rx_bytes)}</td>`,
+  ].join('');
+}
+
+// Точечное обновление: строки, которые не изменились, не трогаем совсем.
+// Полная перерисовка таблицы на каждый опрос и была причиной рывков.
+function renderRows(items, makeRow, sigOf){
+  const tbody = $('#rows');
+  const seen = new Set();
+  let prev = null;
+  for (const it of items){
+    const id = it.id;
+    seen.add(id);
+    const sig = sigOf(it);
+    let rec = rowIndex.get(id);
+    if (!rec){
+      const tr = document.createElement('tr');
+      tr.innerHTML = makeRow(it);
+      rec = {tr, sig};
+      rowIndex.set(id, rec);
+    } else if (rec.sig !== sig){
+      rec.tr.innerHTML = makeRow(it);
+      rec.sig = sig;
+    }
+    const dead = it.closed !== undefined ? it.closed : !it.live;
+    rec.tr.className = dead ? 'dead' : '';
+    rec.tr.title = it.lport !== undefined
+      ? `локальный порт ${it.lport}, последняя активность ${fmtTime(it.last_seen)}`
+      : `последняя активность ${fmtTime(it.last_seen)}`;
+    // insertBefore перемещает уже существующий узел, пересоздавать его не нужно
+    const next = prev ? prev.nextSibling : tbody.firstChild;
+    if (next !== rec.tr) tbody.insertBefore(rec.tr, next);
+    prev = rec.tr;
+  }
+  for (const [id, rec] of rowIndex){
+    if (!seen.has(id)){ rec.tr.remove(); rowIndex.delete(id); }
+  }
+}
+
+async function refresh(){
+  if (state.busy) return;
+  state.busy = true;
+  try {
+    const url = `/api/state?scope=${state.scope}&view=${state.view}`
+      + `&q=${encodeURIComponent($('#qc').value)}`
+      + `&show_local=${state.showLocal ? 1 : 0}&show_self=${state.showSelf ? 1 : 0}`;
+    const r = await api(url);
+    if (!r) return;
+
+    state.dump = r.dump;
+    state.selected = r.selected;
+    // В сводке shown считает адреса, а matched - соединения: подписи разные,
+    // иначе "747 (показано 124)" читается как обрезанная выдача.
+    const total = state.view === 'agg' && r.targets ? r.targets.total : r.stats.matched;
+    $('#s-matched').textContent = state.view === 'agg'
+      ? `${total.toLocaleString('ru-RU')} адресов, ${r.stats.matched.toLocaleString('ru-RU')} соединений`
+      : r.stats.matched.toLocaleString('ru-RU')
+        + (r.stats.shown < r.stats.matched ? ` (показано ${r.stats.shown})` : '');
+    $('#s-stored').textContent = r.stats.stored.toLocaleString('ru-RU');
+    $('#s-pkts').textContent = r.stats.packets.toLocaleString('ru-RU');
+    $('#s-if').textContent = r.stats.iface;
+    $('#capled').className = 'dot' + (r.stats.capture ? '' : ' off');
+    $('#capled').title = r.stats.capture ? 'Пакетный захват активен' : 'Пакетный захват недоступен';
+
+    const w = $('#warn');
+    if (r.stats.capture || !r.stats.capture_hint){ w.style.display = 'none'; delete w.dataset.offline; }
+    else {
+      const [head, ...rest] = r.stats.capture_hint.split('\n');
+      w.innerHTML = `<b>Пакетный захват выключен.</b> Домены и короткие соединения показаны не будут, `
+        + `остается только опрос сокетов. ${esc(head)}`
+        + (rest.length ? `<pre>${esc(rest.join('\n'))}</pre>` : '');
+      w.style.display = '';
+    }
+
+    const proc = state.procs.find(p => p.pid === r.selected);
+    $('#selinfo').innerHTML = proc
+      ? `${esc(proc.name)} <b class="mono">${proc.pid}</b>, в группе ${plural(r.group.length, 'процесс', 'процесса', 'процессов')}`
+      : 'процесс не выбран, показан весь хост';
+
+    $('#th-proc').textContent = state.view === 'agg' ? 'Сессии' : 'Процесс';
+    const items = state.view === 'agg' ? (r.targets ? r.targets.items : []) : r.conns;
+    state.lastRows = items;
+    $('#empty').style.display = items.length ? 'none' : '';
+
+    if (state.view === 'agg'){
+      renderRows(items, aggRow, t => `${t.live}|${t.sessions}|${t.tx_bytes}|${t.rx_bytes}|${t.domain}|${t.asn}`);
+    } else {
+      renderRows(items, listRow, c => `${c.state}|${c.tx_bytes}|${c.rx_bytes}|${c.domain}|${c.asn}|${c.pname}`);
+    }
+
+    const rec = r.dump.running;
+    $('#recpill').style.display = rec ? '' : 'none';
+    $('#btn-dump').textContent = rec ? 'Остановить дамп' : 'Собрать дамп';
+    $('#btn-dump').className = rec ? 'rec' : 'primary';
+    if (rec && r.dump.started){
+      const s = Math.floor((Date.now() - r.dump.started) / 1000);
+      $('#rectime').textContent = String(Math.floor(s / 60)).padStart(2, '0') + ':' + String(s % 60).padStart(2, '0');
+    }
+  } finally {
+    state.busy = false;
+  }
+}
+
+/* ---------- элементы управления ---------- */
+
+$('#rows').addEventListener('click', e => {
+  const b = e.target.closest('.copy');
+  if (b) copy(b.dataset.copy, b.dataset.copy);
+});
+
+let qTimer;
+$('#q').addEventListener('input', () => { clearTimeout(qTimer); qTimer = setTimeout(loadProcs, 160); });
+let qcTimer;
+$('#qc').addEventListener('input', () => { clearTimeout(qcTimer); qcTimer = setTimeout(refresh, 160); });
+
+document.querySelectorAll('.filters button').forEach(b => b.onclick = () => {
+  document.querySelectorAll('.filters button').forEach(x => x.classList.remove('on'));
+  b.classList.add('on'); state.filter = b.dataset.f; loadProcs();
+});
+document.querySelectorAll('#scope button').forEach(b => b.onclick = () => {
+  document.querySelectorAll('#scope button').forEach(x => x.classList.remove('on'));
+  b.classList.add('on'); state.scope = b.dataset.s; hardRefresh();
+});
+document.querySelectorAll('#viewmode button').forEach(b => b.onclick = () => {
+  document.querySelectorAll('#viewmode button').forEach(x => x.classList.remove('on'));
+  b.classList.add('on'); state.view = b.dataset.v; hardRefresh();
+});
+$('#showlocal').onchange = e => { state.showLocal = e.target.checked; hardRefresh(); };
+$('#showselfc').onchange = e => {
+  state.showSelf = e.target.checked; $('#showself').checked = e.target.checked;
+  hardRefresh(); loadProcs();
+};
+$('#showself').onchange = e => {
+  state.showSelf = e.target.checked; $('#showselfc').checked = e.target.checked;
+  loadProcs(); hardRefresh();
+};
+
+function hardRefresh(){
+  $('#rows').innerHTML = ''; rowIndex.clear(); refresh();
+}
+
+$('#btn-dump').onclick = async () => {
+  if (state.dump && state.dump.running){
+    const r = await api('/api/dump/stop', {method:'POST'}) || {};
+    toast(`Дамп сохранен: <span class="mono">${esc(r.path || '')}</span><br>${fmtBytes(r.size)}`
+      + ' <span style="color:var(--dim)">(кнопка "Дампы" в шапке открывает папку)</span>'
+      + (r.sidecar ? `<br><span style="color:var(--dim)">карта соединений: ${esc(r.sidecar)}</span>` : ''));
+  } else {
+    const r = await api('/api/dump/start', {method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({filtered: $('#onlyproc').checked && !!state.selected})})
+      || {ok:false, error:'нет связи с SocketTrail'};
+    toast(r.ok ? `Запись идет в <span class="mono">${esc(r.path)}</span>`
+        + (r.filter ? `<br><span style="color:var(--dim)">фильтр: ${esc(r.filter)}</span>` : '')
+      : 'Не удалось запустить dumpcap: ' + esc(r.error || ''), r.ok ? '' : 'bad');
+  }
+  refresh();
+};
+
+$('#btn-copy').onclick = () => {
+  const head = state.view === 'agg'
+    ? ['время','активных','домен','адрес','порт','протокол','сеть','сессий','исх','вх']
+    : ['время','состояние','домен','адрес','порт','протокол','сеть','процесс','pid','исх','вх'];
+  const lines = [head.join('\t')];
+  for (const it of state.lastRows){
+    lines.push(state.view === 'agg'
+      ? [fmtTime(it.first_seen), it.live, it.domain || '', it.remote, it.rport, it.proto,
+         `${it.asn || ''} ${it.owner || ''}`.trim(), it.sessions, it.tx_bytes, it.rx_bytes].join('\t')
+      : [fmtTime(it.first_seen), it.state, it.domain || '', it.remote, it.rport, it.proto,
+         `${it.asn || ''} ${it.owner || ''}`.trim(), it.pname || '', it.pid ?? '', it.tx_bytes, it.rx_bytes].join('\t'));
+  }
+  copy(lines.join('\n'), plural(state.lastRows.length, 'строка', 'строки', 'строк'));
+};
+
+// Каталог дампов лежит в домашней папке и называется так же, как репозиторий
+// проекта, - показываем полный путь и открываем его по кнопке.
+$('#btn-folder').onclick = async () => {
+  const box = $('#dumps');
+  if (box.style.display !== 'none'){ box.style.display = 'none'; return; }
+  const r = await api('/api/dumps');
+  if (!r) return;
+  const rows = r.files.map(f => `<tr><td class="f">${esc(f.name)}</td><td>${fmtBytes(f.size)}</td>`
+    + `<td>${new Date(f.mtime).toLocaleString('ru-RU')}</td></tr>`).join('');
+  box.innerHTML = `<div class="path">Дампы сохраняются в <code>${esc(r.dir)}</code>`
+    + `<button id="btn-reveal">Открыть папку</button>`
+    + `<button id="btn-copydir">Скопировать путь</button>`
+    + `<button id="btn-hide" style="margin-left:auto">Скрыть</button></div>`
+    + (rows ? `<table>${rows}</table>`
+            : '<div style="color:var(--dim)">Пока ни одного дампа не собрано.</div>');
+  box.style.display = '';
+  $('#btn-reveal').onclick = async () => {
+    const res = await api('/api/reveal', {method:'POST'});
+    if (res && !res.ok) toast('Не удалось открыть папку, путь: ' + esc(res.dir), 'bad');
+  };
+  $('#btn-copydir').onclick = () => copy(r.dir, r.dir);
+  $('#btn-hide').onclick = () => { box.style.display = 'none'; };
+};
+
+$('#btn-export').onclick = () => location.href = '/api/export?scope=' + state.scope;
+$('#btn-html').onclick = () => location.href = '/api/export?format=html&scope=' + state.scope;
+$('#btn-clear').onclick = async () => { await api('/api/clear', {method:'POST'}); hardRefresh(); };
+
+loadWidths();
+initResizers();
+initAsideGrip();
+loadProcs();
+refresh();
+setInterval(loadProcs, 2500);
+setInterval(refresh, 1000);
+</script>
+</body>
+</html>

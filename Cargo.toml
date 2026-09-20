@@ -1,0 +1,16 @@
+[package]
+name = "sockettrail"
+version = "0.1.0"
+edition = "2024"
+description = "Монитор сетевых соединений с привязкой к процессу, включая приложения под Proton и Wine"
+license = "MIT"
+repository = "https://github.com/mazixs/SocketTrail"
+readme = "README.md"
+keywords = ["network", "monitor", "proton", "pcap", "linux"]
+categories = ["network-programming", "command-line-utilities"]
+
+[dependencies]
+axum = "0.8.9"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "process", "io-util", "time", "sync"] }

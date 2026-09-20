@@ -1,0 +1,18 @@
+# Фоновый сбор: история соединений копится еще до того, как открыто окно.
+# Ставится по желанию:
+#   mkdir -p ~/.config/systemd/user
+#   cp assets/sockettrail.service ~/.config/systemd/user/
+#   systemctl --user enable --now sockettrail
+# После этого запуск ярлыка или команды sockettrail просто откроет окно
+# работающего экземпляра, а не поднимет второй.
+[Unit]
+Description=SocketTrail - сбор сетевых соединений по процессам
+After=graphical-session.target
+
+[Service]
+ExecStart=%h/.local/bin/sockettrail --no-open
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target
