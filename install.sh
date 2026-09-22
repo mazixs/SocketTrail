@@ -30,8 +30,8 @@ install -m 644 assets/sockettrail.svg "$ICON_DIR/sockettrail.svg"
 packaging/desktop.sh "$APP_DIR" "$BIN_DIR/sockettrail"
 
 command -v update-desktop-database >/dev/null && update-desktop-database "$APP_DIR" 2>/dev/null || true
-command -v gtk-update-icon-cache >/dev/null &&
-  gtk-update-icon-cache -qtf "$DATA_HOME/icons/hicolor" 2>/dev/null || true
+# Кеш иконок в домашнем каталоге не создаем: без него GTK сканирует каталог сам,
+# а устаревший кеш прячет иконки, добавленные позже, и держит удаленные.
 
 echo "   бинарь:  $BIN_DIR/sockettrail"
 echo "   ярлык:   $APP_DIR/sockettrail.desktop"
