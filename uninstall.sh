@@ -17,6 +17,6 @@ esac
 APP_DIR="$DATA_HOME/applications"
 ICON_DIR="$DATA_HOME/icons/hicolor/scalable/apps"
 
-rm -fv "$BIN_DIR/sockettrail" "$APP_DIR/sockettrail.desktop" "$ICON_DIR/sockettrail.svg"
+rm -fv "$BIN_DIR/sockettrail" "$APP_DIR/sockettrail.desktop" "$APP_DIR"/sockettrail-*.desktop "$ICON_DIR/sockettrail.svg"
 command -v update-desktop-database >/dev/null && update-desktop-database "$APP_DIR" 2>/dev/null || true
 echo "Удалено. Дампы в ~/SocketTrail остались на месте."

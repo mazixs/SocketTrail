@@ -260,6 +260,7 @@ async fn main() {
 
     let router = Router::new()
         .route("/", get(index))
+        .route(window::UI_PATH, get(index))
         .route("/api/ping", get(api_ping))
         .route("/api/procs", get(api_procs))
         .route("/api/state", get(api_state))

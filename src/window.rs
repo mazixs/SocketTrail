@@ -10,6 +10,11 @@ use std::time::{Duration, Instant};
 
 pub const WM_CLASS: &str = "SocketTrail";
 
+/// Отдельный путь окна. На Wayland Chrome игнорирует --class и выводит app_id из
+/// адреса: для /sockettrail это chrome-127.0.0.1__sockettrail-Default без порта.
+/// По нему док GNOME находит ярлык (StartupWMClass в install.sh) и берет иконку.
+pub const UI_PATH: &str = "/sockettrail";
+
 pub enum Opened {
     /// Свой процесс браузера: его завершение - сигнал закрыть программу.
     Window(Child),
@@ -80,7 +85,10 @@ fn profile_dir(browser: &Path) -> PathBuf {
     crate::paths::cache_dir().join("ui-profile")
 }
 
-pub fn open(url: &str) -> Opened {
+/// `base` - корень сервера вида http://127.0.0.1:8787/.
+pub fn open(base: &str) -> Opened {
+    let url = format!("{}{UI_PATH}", base.trim_end_matches('/'));
+    let url = url.as_str();
     if let Some(browser) = find_browser() {
         let profile = profile_dir(&browser);
         let _ = std::fs::create_dir_all(&profile);
