@@ -199,7 +199,12 @@ fn profile_browser_alive(profile_arg: &str) -> bool {
         return false;
     };
     dir.flatten()
-        .filter(|e| e.file_name().to_string_lossy().bytes().all(|b| b.is_ascii_digit()))
+        .filter(|e| {
+            e.file_name()
+                .to_string_lossy()
+                .bytes()
+                .all(|b| b.is_ascii_digit())
+        })
         .filter_map(|e| std::fs::read(e.path().join("cmdline")).ok())
         .any(|raw| {
             let args: Vec<&[u8]> = raw.split(|b| *b == 0).collect();

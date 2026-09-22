@@ -195,11 +195,7 @@ impl Store {
     }
 
     /// Применение снимка сокетов: обновляет состояние и владельца.
-    pub fn apply_sockets(
-        &mut self,
-        socks: &[SockEntry],
-        procs: &HashMap<i32, ProcInfo>,
-    ) {
+    pub fn apply_sockets(&mut self, socks: &[SockEntry], procs: &HashMap<i32, ProcInfo>) {
         let t = now_ms();
         let mut alive: HashSet<ConnKey> = HashSet::with_capacity(socks.len());
         let mut udp_owner: HashMap<u16, i32> = HashMap::new();

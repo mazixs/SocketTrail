@@ -59,7 +59,8 @@ SocketTrail - монитор сетевых соединений с привяз
 
 Использование: sockettrail [ключи]
 
-  -i, --iface <имя>   интерфейс захвата (по умолчанию any - все сразу)
+  -i, --iface <имя>   интерфейс захвата, несколько - через запятую (по умолчанию any:
+                      на Linux все сразу, на Windows все адаптеры Npcap кроме loopback)
       --port <порт>   порт локального интерфейса (по умолчанию 8787)
       --no-open       не открывать окно, только поднять сервер (фоновый сбор)
   -h, --help          эта справка
@@ -445,8 +446,11 @@ async fn poll_loop(app: Shared) {
             if full {
                 // UDP без удаленного адреса (так всегда на Windows) активен, если по его порту идут пакеты
                 let recent = state::now_ms().saturating_sub(5_000);
-                let mut active: HashSet<i32> =
-                    socks.iter().filter(|s| s.rport != 0).filter_map(|s| s.pid).collect();
+                let mut active: HashSet<i32> = socks
+                    .iter()
+                    .filter(|s| s.rport != 0)
+                    .filter_map(|s| s.pid)
+                    .collect();
                 active.extend(
                     g.store
                         .conns
@@ -1184,7 +1188,9 @@ fn tz_offset() -> i64 {
 /// Bias в минутах со знаком "UTC минус местное", плюс поправка текущего сезона.
 #[cfg(windows)]
 fn tz_offset_os() -> i64 {
-    use windows_sys::Win32::System::Time::{DYNAMIC_TIME_ZONE_INFORMATION, GetDynamicTimeZoneInformation};
+    use windows_sys::Win32::System::Time::{
+        DYNAMIC_TIME_ZONE_INFORMATION, GetDynamicTimeZoneInformation,
+    };
     let mut tz: DYNAMIC_TIME_ZONE_INFORMATION = unsafe { std::mem::zeroed() };
     let bias = match unsafe { GetDynamicTimeZoneInformation(&mut tz) } {
         1 => tz.Bias + tz.StandardBias,

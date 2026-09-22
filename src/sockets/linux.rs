@@ -80,7 +80,15 @@ fn parse_table(path: &str, proto: Proto, out: &mut Vec<(SockEntry, u64)>) {
         };
         let inode: u64 = f[9].parse().unwrap_or(0);
         out.push((
-            SockEntry { proto, local, lport, remote, rport, state, pid: None },
+            SockEntry {
+                proto,
+                local,
+                lport,
+                remote,
+                rport,
+                state,
+                pid: None,
+            },
             inode,
         ));
     }
@@ -125,4 +133,3 @@ fn inode_owners(pids: &[i32]) -> HashMap<u64, i32> {
     }
     map
 }
-

@@ -18,11 +18,13 @@ pub fn dumpcap() -> &'static std::path::Path {
     P.get_or_init(|| {
         #[cfg(windows)]
         {
-            let dirs = win::wireshark_dir()
-                .into_iter()
-                .chain(["ProgramFiles", "ProgramW6432", "ProgramFiles(x86)"].iter().filter_map(|v| {
-                    std::env::var_os(v).map(|d| std::path::PathBuf::from(d).join("Wireshark"))
-                }));
+            let dirs = win::wireshark_dir().into_iter().chain(
+                ["ProgramFiles", "ProgramW6432", "ProgramFiles(x86)"]
+                    .iter()
+                    .filter_map(|v| {
+                        std::env::var_os(v).map(|d| std::path::PathBuf::from(d).join("Wireshark"))
+                    }),
+            );
             for d in dirs {
                 let exe = d.join("dumpcap.exe");
                 if exe.is_file() {
@@ -96,7 +98,10 @@ fn iface_args(iface: &str) -> Vec<String> {
             .map(|o| list_ifaces(&String::from_utf8_lossy(&o.stdout)))
             .unwrap_or_default();
     }
-    names.into_iter().flat_map(|n| ["-i".to_string(), n]).collect()
+    names
+        .into_iter()
+        .flat_map(|n| ["-i".to_string(), n])
+        .collect()
 }
 
 /// Общие для живого потока и дампа параметры. -s, -f и -p до первого -i
@@ -266,6 +271,9 @@ mod tests {
                    3. \\Device\\NPF_Loopback (Adapter for loopback traffic capture)\n\
                    4. \\Device\\NPF_{E5F6} (WAN Miniport (IP))\n\
                    5. etwdump (Event Tracing for Windows (ETW) reader)\n";
-        assert_eq!(list_ifaces(out), ["\\Device\\NPF_{A1B2}", "\\Device\\NPF_{C3D4}"]);
+        assert_eq!(
+            list_ifaces(out),
+            ["\\Device\\NPF_{A1B2}", "\\Device\\NPF_{C3D4}"]
+        );
     }
 }

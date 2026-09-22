@@ -4,8 +4,12 @@
 
 use std::collections::HashMap;
 
-use windows_sys::Wdk::System::Threading::{NtQueryInformationProcess, ProcessCommandLineInformation};
-use windows_sys::Win32::Foundation::{CloseHandle, FILETIME, HANDLE, INVALID_HANDLE_VALUE, UNICODE_STRING};
+use windows_sys::Wdk::System::Threading::{
+    NtQueryInformationProcess, ProcessCommandLineInformation,
+};
+use windows_sys::Win32::Foundation::{
+    CloseHandle, FILETIME, HANDLE, INVALID_HANDLE_VALUE, UNICODE_STRING,
+};
 use windows_sys::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
 };
@@ -103,7 +107,9 @@ fn read(pid: i32, ppid: i32, exe: String) -> Entry {
         let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid as u32);
         if !h.is_null() {
             started = start_time(h);
-            cmdline = command_line(h).or_else(|| image_path(h)).unwrap_or_default();
+            cmdline = command_line(h)
+                .or_else(|| image_path(h))
+                .unwrap_or_default();
             CloseHandle(h);
         }
     }
@@ -125,7 +131,10 @@ fn read(pid: i32, ppid: i32, exe: String) -> Entry {
 }
 
 unsafe fn start_time(h: HANDLE) -> u64 {
-    let z = FILETIME { dwLowDateTime: 0, dwHighDateTime: 0 };
+    let z = FILETIME {
+        dwLowDateTime: 0,
+        dwHighDateTime: 0,
+    };
     let (mut c, mut e, mut k, mut u) = (z, z, z, z);
     if unsafe { GetProcessTimes(h, &mut c, &mut e, &mut k, &mut u) } == 0 {
         return 0;
@@ -136,7 +145,8 @@ unsafe fn start_time(h: HANDLE) -> u64 {
 unsafe fn image_path(h: HANDLE) -> Option<String> {
     let mut buf = [0u16; 1024];
     let mut len = buf.len() as u32;
-    let ok = unsafe { QueryFullProcessImageNameW(h, PROCESS_NAME_WIN32, buf.as_mut_ptr(), &mut len) };
+    let ok =
+        unsafe { QueryFullProcessImageNameW(h, PROCESS_NAME_WIN32, buf.as_mut_ptr(), &mut len) };
     (ok != 0).then(|| String::from_utf16_lossy(&buf[..len as usize]))
 }
 
@@ -180,8 +190,15 @@ mod tests {
     fn sees_self_and_parent_link() {
         let me = std::process::id() as i32;
         let list = Scanner::default().refresh();
-        let p = list.iter().find(|p| p.pid == me).expect("свой процесс не найден");
-        assert!(p.name.to_ascii_lowercase().ends_with(".exe"), "имя: {}", p.name);
+        let p = list
+            .iter()
+            .find(|p| p.pid == me)
+            .expect("свой процесс не найден");
+        assert!(
+            p.name.to_ascii_lowercase().ends_with(".exe"),
+            "имя: {}",
+            p.name
+        );
         assert!(!p.cmdline.is_empty());
     }
 }

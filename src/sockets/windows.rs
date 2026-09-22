@@ -165,7 +165,10 @@ mod tests {
     #[test]
     fn byte_order() {
         assert_eq!(port(0x5000), 80); // 80 в сетевом порядке: байты 00 50
-        assert_eq!(v4(u32::from_ne_bytes([192, 168, 1, 2])).to_string(), "192.168.1.2");
+        assert_eq!(
+            v4(u32::from_ne_bytes([192, 168, 1, 2])).to_string(),
+            "192.168.1.2"
+        );
     }
 
     /// Свое соединение должно быть в таблице со своим PID. Работает и под Wine:

@@ -38,7 +38,7 @@ SocketTrail совмещает оба источника: быстрый опр�
 
 ## Требования
 
-Linux, `dumpcap` из состава Wireshark. Root не нужен, если выполнено штатное
+Linux (про Windows - в разделе [Windows](#windows)), `dumpcap` из состава Wireshark. Root не нужен, если выполнено штатное
 условие Wireshark - у `dumpcap` есть capabilities, а пользователь состоит в группе
 `wireshark`:
 
@@ -160,37 +160,50 @@ ClientHello, ответы DNS, PTR-запись, затем подпись дл�
 
 | Модуль | Назначение |
 |---|---|
-| `src/procs.rs` | инвентаризация процессов через /proc, распознавание Proton и дерева потомков |
-| `src/sockets.rs` | парсер /proc/net/{tcp,tcp6,udp,udp6} и привязка inode сокета к PID |
+| `src/procs/` | инвентаризация процессов: /proc на Linux (плюс распознавание Proton), Toolhelp32 на Windows; дерево потомков |
+| `src/sockets/` | снимок сокетов: /proc/net/* и inode -> PID на Linux, `GetExtendedTcpTable`/`GetExtendedUdpTable` на Windows |
 | `src/pcap.rs` | разбор потока pcapng, извлечение SNI из TLS ClientHello и адресов из DNS-ответов |
 | `src/capture.rs` | управление dumpcap: живой поток и запись дампа |
-| `src/resolve.rs` | PTR и ASN через resolvectl (запасной путь - dig) и Team Cymru; показываются оба, потому что они часто расходятся |
+| `src/resolve.rs` | PTR и ASN через resolvectl (запасной путь - dig), на Windows через `DnsQuery_W`, и Team Cymru; показываются оба, потому что они часто расходятся |
 | `src/cache.rs` | кеш найденных имен на диске, чтобы они не терялись между запусками |
 | `src/state.rs` | история соединений, счетчики, сведение имен |
 | `src/report.rs` | автономный HTML-отчет |
 | `src/window.rs` | окно на Chromium-браузере со своим профилем, открытие папок |
 | `src/paths.rs` | каталоги кеша и дампов |
+| `src/alive.rs` | SSE-канал `/api/alive`: закрытие окна завершает программу |
 | `ui/index.html` | интерфейс, вшит в бинарь |
 
 ## Windows
 
-Запланировано отдельной фазой. Интерфейс, ядро состояния, разбор pcapng/DNS/SNI,
-отчет, окно (Edge есть в системе всегда) и каталоги (`src/paths.rs`, `src/window.rs`)
-уже переносимы. Платформенно-зависимые места:
+Портативный zip: `sockettrail.exe`, `README.txt`, `LICENSE.txt`. Установка не нужна,
+exe собран со статическим CRT и зависит только от системных DLL. Windows 10 и 11, x64.
 
-| Linux сейчас | Windows |
-|---|---|
-| `procs.rs`: `/proc/<pid>` | `CreateToolhelp32Snapshot` (PID, PPID, имя), `QueryFullProcessImageNameW`; cmdline через `NtQueryInformationProcess` |
-| `sockets.rs`: `/proc/net/*` + inode -> PID | `GetExtendedTcpTable`/`GetExtendedUdpTable` с `*_OWNER_PID` - PID приходит сразу, этап с inode не нужен |
-| `capture.rs`: `dumpcap` с capabilities | `dumpcap.exe` из Wireshark + драйвер Npcap (ставится с Wireshark, опция "без прав администратора" при установке) |
-| остановка дампа по SIGTERM | `dumpcap` не принимает сигналы: остановка через `-a duration`/закрытие stdin или `GenerateConsoleCtrlEvent` |
-| `resolve.rs`: `resolvectl`/`dig` | `DnsQuery_W` (PTR и TXT для Team Cymru) |
-| распознавание Proton/Wine | не нужно: все процессы нативные, дерево Steam -> игра остается |
+- Список процессов и соединений работает сразу и без прав администратора.
+- Для доменов, байтов по соединениям и дампов нужен [Wireshark](https://www.wireshark.org/download.html)
+  вместе с Npcap (ставится из установщика Wireshark). Путь к `dumpcap.exe` берется из
+  реестра, если Wireshark стоит не в стандартной папке. Если при установке Npcap
+  включена опция "Restrict Npcap driver's access to Administrators only", SocketTrail
+  нужно запускать от имени администратора.
+- Окно открывается в Edge (или Chrome) в режиме приложения.
+  Закрытие окна или консоли завершает программу, дамп дописывается.
+- exe пока не подписан, SmartScreen покажет предупреждение: "Подробнее" ->
+  "Выполнить в любом случае". Контрольные суммы и attestation - на странице релиза.
+- Дампы: `%USERPROFILE%\SocketTrail`, кеш и профиль окна: `%LOCALAPPDATA%\SocketTrail`.
 
-Отличия по данным: у Windows UDP-таблица не содержит удаленного адреса, поэтому
-UDP-цели дает только пакетный разбор. Интерфейса `any` нет, захват идет по
-основному адаптеру (или по нескольким параллельно). Сборка - `x86_64-pc-windows-msvc`,
-окно консоли скрывается через `#![windows_subsystem = "windows"]`.
+Отличия от Linux: у Windows UDP-таблица не содержит удаленного адреса, поэтому UDP-цели
+дает только пакетный разбор, а владелец определяется по локальному порту. Интерфейса
+`any` нет: `-i any` захватывает со всех физических адаптеров сразу, `-i` принимает
+и список через запятую. Распознавание Proton не нужно.
+
+Сборка:
+
+```sh
+make win                                 # mingw-w64, target/windows/SocketTrail-<версия>-windows-x64.zip
+cargo test --target x86_64-pc-windows-gnu  # тесты под Wine (runner в .cargo/config.toml)
+```
+
+Релизный zip собирает CI на `windows-2025` (`x86_64-pc-windows-msvc`, `+crt-static`),
+см. `.github/workflows/release.yml`.
 
 ## Лицензия
 

@@ -255,7 +255,9 @@ mod win {
                     } else {
                         let t = &rec.Data.TXT;
                         let arr = t.pStringArray.as_ptr();
-                        (0..t.dwStringCount as usize).map(|i| wstr(*arr.add(i))).collect()
+                        (0..t.dwStringCount as usize)
+                            .map(|i| wstr(*arr.add(i)))
+                            .collect()
                     }
                 };
                 if !v.is_empty() {
@@ -292,7 +294,10 @@ mod win {
 #[cfg(windows)]
 fn arpa(ip: &IpAddr) -> String {
     match ip {
-        IpAddr::V4(v4) => format!("{}.in-addr.arpa", reverse_name(ip).unwrap_or_else(|| v4.to_string())),
+        IpAddr::V4(v4) => format!(
+            "{}.in-addr.arpa",
+            reverse_name(ip).unwrap_or_else(|| v4.to_string())
+        ),
         IpAddr::V6(v6) => {
             let mut s = String::with_capacity(72);
             for b in v6.octets().iter().rev() {
@@ -308,7 +313,11 @@ async fn ptr(ip: &IpAddr) -> Answer {
     match win::ptr(arpa(ip)).await {
         Answer::Ok(s) => {
             let s = s.trim_end_matches('.').to_string();
-            if valid_name(&s) { Answer::Ok(s) } else { Answer::Empty }
+            if valid_name(&s) {
+                Answer::Ok(s)
+            } else {
+                Answer::Empty
+            }
         }
         other => other,
     }

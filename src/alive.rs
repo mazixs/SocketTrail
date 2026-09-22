@@ -70,6 +70,9 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(3500)).await;
         assert!(!w.is_finished(), "окно еще открыто второй страницей");
         drop(s2);
-        tokio::time::timeout(Duration::from_secs(5), w).await.unwrap().unwrap();
+        tokio::time::timeout(Duration::from_secs(5), w)
+            .await
+            .unwrap()
+            .unwrap();
     }
 }
