@@ -27,37 +27,7 @@ mkdir -p "$BIN_DIR" "$APP_DIR" "$ICON_DIR"
 install -m 755 target/release/sockettrail "$BIN_DIR/sockettrail"
 install -m 644 assets/sockettrail.svg "$ICON_DIR/sockettrail.svg"
 
-cat > "$APP_DIR/sockettrail.desktop" <<DESKTOP
-[Desktop Entry]
-Type=Application
-Name=SocketTrail
-GenericName=Монитор сетевых соединений
-Comment=Сетевые соединения по процессам, включая приложения под Proton
-Exec=$BIN_DIR/sockettrail
-Icon=sockettrail
-Terminal=false
-Categories=Network;Monitor;
-Keywords=network;traffic;capture;proton;wine;pcap;
-StartupNotify=true
-StartupWMClass=chrome-127.0.0.1__sockettrail-Default
-DESKTOP
-chmod 644 "$APP_DIR/sockettrail.desktop"
-
-# Док сопоставляет окно с ярлыком по app_id (Wayland) или WM_CLASS (X11), а они
-# зависят от браузера. Скрытые ярлыки-псевдонимы дают иконку SocketTrail для каждого.
-for wm in chromium-127.0.0.1__sockettrail-Default msedge-127.0.0.1__sockettrail-Default \
-          brave-127.0.0.1__sockettrail-Default vivaldi-127.0.0.1__sockettrail-Default SocketTrail; do
-  cat > "$APP_DIR/sockettrail-$wm.desktop" <<DESKTOP
-[Desktop Entry]
-Type=Application
-Name=SocketTrail
-Exec=$BIN_DIR/sockettrail
-Icon=sockettrail
-NoDisplay=true
-StartupWMClass=$wm
-DESKTOP
-  chmod 644 "$APP_DIR/sockettrail-$wm.desktop"
-done
+packaging/desktop.sh "$APP_DIR" "$BIN_DIR/sockettrail"
 
 command -v update-desktop-database >/dev/null && update-desktop-database "$APP_DIR" 2>/dev/null || true
 command -v gtk-update-icon-cache >/dev/null &&

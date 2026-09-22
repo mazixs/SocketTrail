@@ -57,6 +57,17 @@ getcap /usr/bin/dumpcap                  # cap_net_admin,cap_net_raw=eip
 ./install.sh
 ```
 
+Или пакетом для Debian и Ubuntu (нужен glibc 2.39+, то есть Ubuntu 24.04 или Debian 13
+и новее):
+
+```sh
+make deb                                            # target/debian/sockettrail_<версия>_amd64.deb
+sudo apt install ./target/debian/sockettrail_*.deb  # подтянет wireshark-common
+```
+
+Пакет ставит бинарь в `/usr/bin`, ярлык и иконку, а также выключенный user-юнит
+для фонового сбора (`systemctl --user enable --now sockettrail`).
+
 Кладет бинарь в `~/.local/bin`, ярлык в меню приложений и проверяет окружение -
 есть ли `dumpcap`, выданы ли ему права, виден ли `~/.local/bin` в `PATH`.
 Права root не нужны. Откат - `./uninstall.sh`.

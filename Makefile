@@ -1,4 +1,4 @@
-.PHONY: run build install uninstall check clean
+.PHONY: run build install uninstall deb check clean
 
 run: ## собрать при необходимости и запустить
 	@./run.sh
@@ -11,6 +11,9 @@ install: ## поставить в ~/.local/bin и добавить ярлык в
 
 uninstall: ## убрать бинарь и ярлык
 	@./uninstall.sh
+
+deb: ## собрать пакет target/debian/sockettrail_<версия>_amd64.deb
+	@packaging/build-deb.sh
 
 check: ## проверить права на захват
 	@dumpcap -D >/dev/null 2>&1 && echo "захват доступен без root" || \
