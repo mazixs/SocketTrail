@@ -39,6 +39,7 @@ Terminal=false
 Categories=Network;Monitor;
 Keywords=network;traffic;capture;proton;wine;pcap;
 StartupNotify=true
+StartupWMClass=SocketTrail
 DESKTOP
 chmod 644 "$APP_DIR/sockettrail.desktop"
 

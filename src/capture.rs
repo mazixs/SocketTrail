@@ -30,11 +30,16 @@ pub fn probe() -> Result<(), String> {
     }
 }
 
+/// Трафик loopback, кроме DNS. Локальные сервисы гоняют через lo гигабайты в
+/// секунду (на тестовой машине 8 ГБ/с): это забивает разбор и раздувает дамп,
+/// а соединений наружу там нет. DNS оставлен - через 127.0.0.53 идут имена.
+pub const NO_LOOPBACK: &str = "not ((net 127.0.0.0/8 or host ::1) and not port 53)";
+
 /// Живой разбор: snaplen 2048 байт хватает для DNS-ответа и TLS ClientHello,
 /// полезную нагрузку целиком тут держать незачем - для нее есть режим дампа.
 pub fn spawn_live(iface: &str, tx: UnboundedSender<Packet>) -> std::io::Result<Child> {
     let mut child = Command::new("dumpcap")
-        .args(["-i", iface, "-s", "2048", "-q", "-w", "-"])
+        .args(["-i", iface, "-s", "2048", "-q", "-w", "-", "-f", NO_LOOPBACK])
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .kill_on_drop(true)
@@ -82,11 +87,11 @@ impl Dump {
         }
         let mut cmd = Command::new("dumpcap");
         cmd.args(["-i", iface, "-s", "0", "-q", "-w", path]);
-        if let Some(f) = bpf
-            && !f.is_empty()
-        {
-            cmd.args(["-f", f]);
-        }
+        let filter = match bpf {
+            Some(f) if !f.is_empty() => f,
+            _ => NO_LOOPBACK,
+        };
+        cmd.args(["-f", filter]);
         let child = cmd
             .stdout(Stdio::null())
             .stderr(Stdio::null())

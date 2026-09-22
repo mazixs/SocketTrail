@@ -27,12 +27,10 @@ pub struct Disk {
 }
 
 pub fn path() -> String {
-    let base = std::env::var("XDG_CACHE_HOME")
-        .ok()
-        .filter(|s| !s.is_empty() && !s.contains("/snap/"))
-        .or_else(|| std::env::var("HOME").ok().map(|h| format!("{h}/.cache")))
-        .unwrap_or_else(|| "/tmp".into());
-    format!("{base}/sockettrail/names.json")
+    crate::paths::cache_dir()
+        .join("names.json")
+        .to_string_lossy()
+        .into_owned()
 }
 
 pub fn load() -> Disk {

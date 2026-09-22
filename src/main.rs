@@ -2,20 +2,25 @@
 
 mod cache;
 mod capture;
+mod paths;
 mod pcap;
 mod procs;
 mod report;
 mod resolve;
 mod sockets;
 mod state;
+mod window;
 
 use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, UNIX_EPOCH};
 
+use axum::extract::Request;
 use axum::extract::{Query, State};
-use axum::http::{StatusCode, header};
+use axum::http::{Method, StatusCode, header};
+use axum::middleware::Next;
+use axum::response::Response;
 use axum::response::{Html, IntoResponse};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -55,12 +60,16 @@ SocketTrail - монитор сетевых соединений с привяз
 
   -i, --iface <имя>   интерфейс захвата (по умолчанию any - все сразу)
       --port <порт>   порт локального интерфейса (по умолчанию 8787)
-      --no-open       не открывать окно, только поднять сервер
+      --no-open       не открывать окно, только поднять сервер (фоновый сбор)
   -h, --help          эта справка
 
 Сервер слушает только 127.0.0.1. Если порт занят уже запущенным SocketTrail,
 повторный запуск просто откроет его окно; если порт занят чужой программой,
 берется следующий свободный.
+
+Окно - Chrome, Chromium, Edge или Brave в режиме приложения со своим профилем.
+Закрытие окна завершает программу, дамп при этом дописывается и закрывается.
+Без Chromium-браузера открывается обычная вкладка, и программа работает до Ctrl+C.
 ";
 
 struct Args {
@@ -131,7 +140,7 @@ async fn bind_port(pref: u16, open: bool) -> (tokio::net::TcpListener, u16) {
                     let url = format!("http://127.0.0.1:{port}/");
                     eprintln!("SocketTrail уже запущен: {url}");
                     if open {
-                        open_ui(&url);
+                        window::open(&url);
                     }
                     std::process::exit(0);
                 }
@@ -207,6 +216,8 @@ async fn main() {
         }
     }
 
+    // Живой dumpcap держим до выхода: kill_on_drop гасит его при завершении.
+    let mut live_capture = None;
     if has_dumpcap {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         match capture::spawn_live(&iface, tx) {
@@ -216,8 +227,7 @@ async fn main() {
                     g.self_roots.insert(pid as i32);
                     g.self_pids.insert(pid as i32);
                 }
-                // держим процесс живым на все время работы
-                std::mem::forget(child);
+                live_capture = Some(child);
                 let a = app.clone();
                 tokio::spawn(async move {
                     while let Some(p) = rx.recv().await {
@@ -260,35 +270,102 @@ async fn main() {
         .route("/api/dumps", get(api_dumps))
         .route("/api/reveal", post(api_reveal))
         .route("/api/export", get(api_export))
-        .with_state(app);
+        .layer(axum::middleware::from_fn(move |req, next| {
+            guard(port, req, next)
+        }))
+        .with_state(app.clone());
 
     let url = format!("http://127.0.0.1:{port}/");
     eprintln!("SocketTrail: {url}");
+
+    let (quit_tx, mut quit_rx) = tokio::sync::mpsc::unbounded_channel::<&'static str>();
     if args.open {
-        open_ui(&url);
+        let url = url.clone();
+        let tx = quit_tx.clone();
+        // Ожидание браузера блокирующее, поэтому в отдельном потоке.
+        std::thread::spawn(move || match window::open(&url) {
+            window::Opened::Window(mut child) => {
+                let _ = child.wait();
+                let _ = tx.send("окно закрыто");
+            }
+            window::Opened::Detached => {
+                eprintln!("[окно] открыто без отслеживания - завершение по Ctrl+C");
+            }
+            window::Opened::Failed => {
+                eprintln!("[окно] браузер не найден, откройте {url} вручную");
+            }
+        });
     }
-    axum::serve(listener, router).await.unwrap();
+    spawn_signal_watch(quit_tx);
+
+    axum::serve(listener, router)
+        .with_graceful_shutdown(async move {
+            let why = quit_rx.recv().await.unwrap_or("канал закрыт");
+            eprintln!("[выход] {why}");
+        })
+        .await
+        .unwrap();
+
+    shutdown(&app).await;
+    drop(live_capture);
 }
 
-fn open_ui(url: &str) {
-    // Окно приложения, если есть Chrome; иначе обычная вкладка браузера.
-    let app_mode = |u: &str| vec![format!("--app={u}"), "--window-size=1500,900".to_string()];
-    for (bin, args) in [
-        ("google-chrome", app_mode(url)),
-        ("chromium", app_mode(url)),
-        ("chromium-browser", app_mode(url)),
-        ("microsoft-edge", app_mode(url)),
-        ("xdg-open", vec![url.to_string()]),
-    ] {
-        if std::process::Command::new(bin)
-            .args(&args)
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .is_ok()
-        {
-            return;
+/// Ctrl+C и SIGTERM (systemctl --user stop) ведут к тому же аккуратному выходу.
+fn spawn_signal_watch(tx: tokio::sync::mpsc::UnboundedSender<&'static str>) {
+    let t = tx.clone();
+    tokio::spawn(async move {
+        if tokio::signal::ctrl_c().await.is_ok() {
+            let _ = t.send("Ctrl+C");
         }
+    });
+    #[cfg(unix)]
+    tokio::spawn(async move {
+        use tokio::signal::unix::{SignalKind, signal};
+        if let Ok(mut s) = signal(SignalKind::terminate()) {
+            s.recv().await;
+            let _ = tx.send("SIGTERM");
+        }
+    });
+}
+
+/// Перед выходом: закрыть незавершенный дамп (иначе .pcapng останется без
+/// карты соединений) и сохранить кеш имен.
+async fn shutdown(app: &Shared) {
+    let running = app.lock().unwrap().dump.is_running();
+    if running {
+        let (path, _, _) = finish_dump(app).await;
+        if let Some(p) = path {
+            eprintln!("[выход] дамп закрыт: {p}");
+        }
+    }
+    let disk = cache_snapshot(&app.lock().unwrap());
+    cache::save(&disk);
+}
+
+/// Защита локального API от чужих страниц в браузере. Проверка Host отсекает
+/// DNS rebinding (чужой домен, указывающий на 127.0.0.1), проверка Origin -
+/// запросы со сторонних сайтов, которые браузер отправляет без спроса (CSRF).
+async fn guard(port: u16, req: Request, next: Next) -> Response {
+    let allowed = [format!("127.0.0.1:{port}"), format!("localhost:{port}")];
+    let host_ok = req
+        .headers()
+        .get(header::HOST)
+        .and_then(|h| h.to_str().ok())
+        .map(|h| allowed.iter().any(|a| a == h))
+        .unwrap_or(false);
+    let origin_ok = req.method() == Method::GET
+        || match req
+            .headers()
+            .get(header::ORIGIN)
+            .and_then(|o| o.to_str().ok())
+        {
+            None => true,
+            Some(o) => allowed.iter().any(|a| o == format!("http://{a}")),
+        };
+    if host_ok && origin_ok {
+        next.run(req).await
+    } else {
+        (StatusCode::FORBIDDEN, "forbidden").into_response()
     }
 }
 
@@ -456,32 +533,7 @@ async fn cache_loop(app: Shared) {
     let mut round: u32 = 0;
     loop {
         tokio::time::sleep(Duration::from_secs(45)).await;
-        let disk = {
-            let g = app.lock().unwrap();
-            cache::Disk {
-                dns: g
-                    .store
-                    .dns
-                    .iter()
-                    .map(|(ip, n)| (ip.to_string(), n.clone()))
-                    .collect(),
-                whois: g
-                    .whois
-                    .iter()
-                    .filter(|(_, w)| w.ptr.is_some() || w.asn.is_some())
-                    .map(|(ip, w)| {
-                        (
-                            ip.to_string(),
-                            cache::Entry {
-                                ptr: w.ptr.clone(),
-                                asn: w.asn.clone(),
-                                owner: w.owner.clone(),
-                            },
-                        )
-                    })
-                    .collect(),
-            }
-        };
+        let disk = cache_snapshot(&app.lock().unwrap());
         tokio::task::spawn_blocking(move || cache::save(&disk));
 
         // Пустой ответ резолвера держим недолго: отрицательный кеш DNS живет
@@ -491,6 +543,32 @@ async fn cache_loop(app: Shared) {
             let mut g = app.lock().unwrap();
             g.whois.retain(|_, w| w.ptr.is_some() || w.asn.is_some());
         }
+    }
+}
+
+fn cache_snapshot(g: &App) -> cache::Disk {
+    cache::Disk {
+        dns: g
+            .store
+            .dns
+            .iter()
+            .map(|(ip, n)| (ip.to_string(), n.clone()))
+            .collect(),
+        whois: g
+            .whois
+            .iter()
+            .filter(|(_, w)| w.ptr.is_some() || w.asn.is_some())
+            .map(|(ip, w)| {
+                (
+                    ip.to_string(),
+                    cache::Entry {
+                        ptr: w.ptr.clone(),
+                        asn: w.asn.clone(),
+                        owner: w.owner.clone(),
+                    },
+                )
+            })
+            .collect(),
     }
 }
 
@@ -904,6 +982,11 @@ async fn api_dump_start(State(app): State<Shared>, Json(b): Json<DumpBody>) -> i
 }
 
 async fn api_dump_stop(State(app): State<Shared>) -> impl IntoResponse {
+    let (path, size, sidecar) = finish_dump(&app).await;
+    Json(json!({ "ok": true, "path": path, "size": size, "sidecar": sidecar }))
+}
+
+async fn finish_dump(app: &Shared) -> (Option<String>, u64, Option<String>) {
     // Child нужно забрать из-под мьютекса, ожидание делаем уже без блокировки.
     let mut dump = {
         let mut g = app.lock().unwrap();
@@ -943,7 +1026,7 @@ async fn api_dump_stop(State(app): State<Shared>) -> impl IntoResponse {
     }
     // Вернуть dump обратно, чтобы путь к последнему файлу оставался виден в интерфейсе.
     app.lock().unwrap().dump = dump;
-    Json(json!({ "ok": true, "path": path, "size": size, "sidecar": sidecar }))
+    (path, size, sidecar)
 }
 
 /// Список уже собранных дампов. Каталог называется так же, как репозиторий
@@ -981,12 +1064,7 @@ async fn api_dumps() -> impl IntoResponse {
 async fn api_reveal() -> impl IntoResponse {
     let dir = dirs_dumps();
     let _ = std::fs::create_dir_all(&dir);
-    let ok = std::process::Command::new("xdg-open")
-        .arg(&dir)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .is_ok();
+    let ok = window::open_default(&dir);
     Json(json!({ "ok": ok, "dir": dir }))
 }
 
@@ -1058,10 +1136,7 @@ async fn api_export(State(app): State<Shared>, Query(q): Query<ExportQuery>) -> 
 }
 
 fn dirs_dumps() -> String {
-    match std::env::var("HOME") {
-        Ok(h) => format!("{h}/SocketTrail"),
-        Err(_) => "/tmp/SocketTrail".into(),
-    }
+    paths::dumps_dir().to_string_lossy().into_owned()
 }
 
 /// Смещение локальной зоны в секундах, снимается один раз при старте.
