@@ -16,8 +16,8 @@ pub const WM_CLASS: &str = "SocketTrail";
 pub const UI_PATH: &str = "/sockettrail";
 
 pub enum Opened {
-    /// Свой процесс браузера: его завершение - сигнал закрыть программу.
-    Window(Child),
+    /// Окно в своем профиле: закрытие последнего окна профиля - сигнал выйти.
+    Window(Watch),
     /// Обычная вкладка или окно уже работающего профиля - жизнь окна не отслеживается.
     Detached,
     Failed,
@@ -119,7 +119,7 @@ pub fn open(base: &str) -> Opened {
                         Err(_) => return Opened::Detached,
                     }
                 }
-                return Opened::Window(child);
+                return Opened::Window(Watch { child, profile });
             }
             Err(e) => eprintln!("[окно] {} не запустился: {e}", browser.display()),
         }
@@ -155,4 +155,54 @@ pub fn open_default(target: &str) -> bool {
         .stderr(Stdio::null())
         .spawn()
         .is_ok()
+}
+
+/// Отслеживание окна. Запущенный процесс ждать нельзя: Chrome, запущенный из
+/// GNOME, переносит себя в свой systemd-scope, и исходный PID завершается через
+/// пару секунд при открытом окне. Поэтому ждем исчезновения главного процесса
+/// браузера с нашим --user-data-dir.
+pub struct Watch {
+    child: Child,
+    profile: PathBuf,
+}
+
+impl Watch {
+    pub fn wait(mut self) {
+        #[cfg(target_os = "linux")]
+        {
+            let arg = format!("--user-data-dir={}", self.profile.display());
+            let mut seen = false;
+            let started = Instant::now();
+            loop {
+                let _ = self.child.try_wait(); // забрать зомби, если исходный процесс вышел
+                if profile_browser_alive(&arg) {
+                    seen = true;
+                } else if seen || started.elapsed() > Duration::from_secs(15) {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(700));
+            }
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = &self.profile;
+            let _ = self.child.wait();
+        }
+    }
+}
+
+/// Есть ли главный процесс браузера (без --type=) с данным профилем.
+#[cfg(target_os = "linux")]
+fn profile_browser_alive(profile_arg: &str) -> bool {
+    let Ok(dir) = std::fs::read_dir("/proc") else {
+        return false;
+    };
+    dir.flatten()
+        .filter(|e| e.file_name().to_string_lossy().bytes().all(|b| b.is_ascii_digit()))
+        .filter_map(|e| std::fs::read(e.path().join("cmdline")).ok())
+        .any(|raw| {
+            let args: Vec<&[u8]> = raw.split(|b| *b == 0).collect();
+            args.contains(&profile_arg.as_bytes())
+                && !args.iter().any(|a| a.starts_with(b"--type="))
+        })
 }

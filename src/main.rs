@@ -285,8 +285,8 @@ async fn main() {
         let tx = quit_tx.clone();
         // Ожидание браузера блокирующее, поэтому в отдельном потоке.
         std::thread::spawn(move || match window::open(&url) {
-            window::Opened::Window(mut child) => {
-                let _ = child.wait();
+            window::Opened::Window(w) => {
+                w.wait();
                 let _ = tx.send("окно закрыто");
             }
             window::Opened::Detached => {
