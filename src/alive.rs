@@ -14,6 +14,18 @@ use futures_util::Stream;
 pub struct Alive {
     clients: AtomicUsize,
     seen: AtomicBool,
+    closing: AtomicBool,
+}
+
+impl Alive {
+    pub fn seen(&self) -> bool {
+        self.seen.load(Ordering::SeqCst)
+    }
+
+    /// Завершение каналов при выходе: иначе graceful shutdown ждал бы их вечно.
+    pub fn close(&self) {
+        self.closing.store(true, Ordering::SeqCst);
+    }
 }
 
 struct Client(Arc<Alive>);
@@ -33,6 +45,9 @@ pub fn stream(a: Arc<Alive>) -> Sse<impl Stream<Item = Result<Event, Infallible>
     let s = futures_util::stream::unfold((Client(a), first), |(c, first)| async move {
         if !first {
             tokio::time::sleep(Duration::from_secs(2)).await;
+        }
+        if c.0.closing.load(Ordering::SeqCst) {
+            return None;
         }
         Some((Ok(Event::default().comment("")), (c, false)))
     });

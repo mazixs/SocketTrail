@@ -3,6 +3,12 @@
 mod alive;
 mod cache;
 mod capture;
+#[cfg(windows)]
+mod dnscache;
+#[cfg(windows)]
+mod elevate;
+#[cfg(windows)]
+mod etw;
 mod paths;
 mod pcap;
 mod procs;
@@ -50,6 +56,10 @@ struct App {
     self_pids: HashSet<i32>,
     /// порт интерфейса, чтобы отличать подключения браузера к самому себе
     port: u16,
+    /// захват доступен после перезапуска с правами администратора (Windows)
+    can_elevate: bool,
+    #[cfg_attr(not(windows), allow(dead_code))]
+    quit: tokio::sync::mpsc::UnboundedSender<&'static str>,
 }
 
 type Shared = Arc<Mutex<App>>;
@@ -59,8 +69,9 @@ SocketTrail - монитор сетевых соединений с привяз
 
 Использование: sockettrail [ключи]
 
-  -i, --iface <имя>   интерфейс захвата, несколько - через запятую (по умолчанию any:
-                      на Linux все сразу, на Windows все адаптеры Npcap кроме loopback)
+  -i, --iface <имя>   интерфейс dumpcap, несколько - через запятую (по умолчанию any:
+                      на Linux все сразу, на Windows все адаптеры Npcap кроме loopback).
+                      Захват через PktMon (Windows, от администратора) идет со всех адаптеров
       --port <порт>   порт локального интерфейса (по умолчанию 8787)
       --no-open       не открывать окно, только поднять сервер (фоновый сбор)
   -h, --help          эта справка
@@ -78,6 +89,10 @@ struct Args {
     iface: String,
     port: u16,
     open: bool,
+    /// перезапуск с правами: дождаться выхода прежнего экземпляра
+    wait_pid: Option<u32>,
+    /// окно уже открыто прежним экземпляром, оно само переподключится
+    adopt: bool,
 }
 
 fn parse_args() -> Args {
@@ -86,6 +101,8 @@ fn parse_args() -> Args {
         iface: "any".into(),
         port: 8787,
         open: true,
+        wait_pid: None,
+        adopt: false,
     };
     let mut i = 0;
     while i < argv.len() {
@@ -107,6 +124,11 @@ fn parse_args() -> Args {
                 }
             }
             "--no-open" => a.open = false,
+            "--wait-pid" => {
+                a.wait_pid = argv.get(i + 1).and_then(|v| v.parse().ok());
+                i += 1;
+            }
+            "--adopt" => a.adopt = true,
             other => eprintln!("[аргументы] неизвестный ключ {other}, пропущен"),
         }
         i += 1;
@@ -166,13 +188,16 @@ async fn main() {
     let args = parse_args();
     let iface = args.iface.clone();
 
+    #[cfg(windows)]
+    if let Some(pid) = args.wait_pid {
+        elevate::wait_pid(pid, 20);
+    }
+
     // Порт занимаем до запуска dumpcap: иначе повторный клик по ярлыку
     // успел бы поднять лишний процесс захвата.
     let (listener, port) = bind_port(args.port, args.open).await;
+    let (quit_tx, mut quit_rx) = tokio::sync::mpsc::unbounded_channel::<&'static str>();
 
-    let probe = capture::probe();
-    let has_dumpcap = probe.is_ok();
-    let mut capture_hint = probe.err();
     let app: Shared = Arc::new(Mutex::new(App {
         store: Store::default(),
         procs: Vec::new(),
@@ -180,13 +205,15 @@ async fn main() {
         selected: None,
         group: Vec::new(),
         dump: capture::Dump::default(),
-        capture_on: has_dumpcap,
-        capture_hint: capture_hint.clone(),
+        capture_on: false,
+        capture_hint: None,
         iface: iface.clone(),
         whois: HashMap::new(),
         self_roots: HashSet::from([std::process::id() as i32]),
         self_pids: HashSet::from([std::process::id() as i32]),
         port,
+        can_elevate: false,
+        quit: quit_tx.clone(),
     }));
 
     // Имена из прошлых запусков: DNS-ответ пролетает один раз, второго шанса нет.
@@ -218,44 +245,42 @@ async fn main() {
         }
     }
 
-    // Живой dumpcap держим до выхода: kill_on_drop гасит его при завершении.
-    let mut live_capture = None;
-    if has_dumpcap {
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        match capture::spawn_live(&iface, tx) {
-            Ok(child) => {
-                if let Some(pid) = child.id() {
-                    let mut g = app.lock().unwrap();
-                    g.self_roots.insert(pid as i32);
-                    g.self_pids.insert(pid as i32);
-                }
-                live_capture = Some(child);
-                let a = app.clone();
-                tokio::spawn(async move {
-                    while let Some(p) = rx.recv().await {
-                        if let Ok(mut g) = a.lock() {
-                            g.store.apply_packet(&p);
-                        }
+    // Живой захват держим до выхода: Drop гасит dumpcap или сессию PktMon.
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let live_capture = match capture::start_live(&iface, tx) {
+        Ok(live) => {
+            let mut g = app.lock().unwrap();
+            if let Some(pid) = live.pid() {
+                g.self_roots.insert(pid as i32);
+                g.self_pids.insert(pid as i32);
+            }
+            g.capture_on = true;
+            drop(g);
+            let a = app.clone();
+            tokio::spawn(async move {
+                while let Some(p) = rx.recv().await {
+                    if let Ok(mut g) = a.lock() {
+                        g.store.apply_packet(&p);
                     }
-                });
-                eprintln!("[capture] живой разбор пакетов на интерфейсе {iface}");
-            }
-            Err(e) => {
-                let msg = format!("dumpcap не запустился: {e}");
-                eprintln!("[capture] {msg}. Останется только опрос сокетов.");
-                let mut g = app.lock().unwrap();
-                g.capture_on = false;
-                g.capture_hint = Some(msg);
-            }
+                }
+            });
+            eprintln!("[capture] живой разбор пакетов: {}", live.describe(&iface));
+            Some(live)
         }
-    } else {
-        capture_hint = app.lock().unwrap().capture_hint.clone();
-        eprintln!(
-            "[capture] пакетный разбор выключен - доменов и коротких соединений не будет.\n{}",
-            capture_hint.as_deref().unwrap_or("")
-        );
-    }
+        Err(hint) => {
+            eprintln!("[capture] пакетный разбор выключен, остается опрос сокетов.\n{hint}");
+            let mut g = app.lock().unwrap();
+            g.capture_hint = Some(hint);
+            #[cfg(windows)]
+            {
+                g.can_elevate = etw::can_elevate();
+            }
+            None
+        }
+    };
 
+    #[cfg(windows)]
+    tokio::spawn(dnscache_loop(app.clone()));
     tokio::spawn(poll_loop(app.clone()));
     tokio::spawn(whois_loop(app.clone()));
     tokio::spawn(cache_loop(app.clone()));
@@ -278,6 +303,7 @@ async fn main() {
         .route("/api/dumps", get(api_dumps))
         .route("/api/reveal", post(api_reveal))
         .route("/api/export", get(api_export))
+        .route("/api/elevate", post(api_elevate))
         .layer(axum::middleware::from_fn(move |req, next| {
             guard(port, req, next)
         }))
@@ -286,44 +312,114 @@ async fn main() {
     let url = format!("http://127.0.0.1:{port}/");
     eprintln!("SocketTrail: {url}");
 
-    let (quit_tx, mut quit_rx) = tokio::sync::mpsc::unbounded_channel::<&'static str>();
     if args.open {
-        let url = url.clone();
-        let tx = quit_tx.clone();
-        let rt = tokio::runtime::Handle::current();
-        // Ожидание браузера блокирующее, поэтому в отдельном потоке. Окно считается
-        // закрытым по любому из признаков: вышел процесс профиля или страница
-        // 10 секунд не держит канал /api/alive.
-        std::thread::spawn(move || match window::open(&url) {
-            window::Opened::Window(w) => {
-                let t = tx.clone();
-                rt.spawn(async move {
-                    alive::wait_closed(alive, 10).await;
-                    let _ = t.send("окно закрыто (страница отключилась)");
-                });
-                w.wait();
-                let _ = tx.send("окно закрыто");
-            }
-            window::Opened::Detached => {
-                eprintln!("[окно] открыто без отслеживания - завершение по Ctrl+C");
-            }
-            window::Opened::Failed => {
-                eprintln!("[окно] браузер не найден, откройте {url} вручную");
+        spawn_window(url.clone(), quit_tx.clone(), alive.clone());
+    } else if args.adopt {
+        // Окно прежнего экземпляра переподключается само; если его уже нет - открываем свое.
+        let (a, tx, url) = (alive.clone(), quit_tx.clone(), url.clone());
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(15)).await;
+            if a.seen() {
+                alive::wait_closed(a, 10).await;
+                let _ = tx.send("окно закрыто (страница отключилась)");
+            } else {
+                spawn_window(url, tx, a);
             }
         });
     }
     spawn_signal_watch(quit_tx);
 
     axum::serve(listener, router)
-        .with_graceful_shutdown(async move {
-            let why = quit_rx.recv().await.unwrap_or("канал закрыт");
-            eprintln!("[выход] {why}");
+        .with_graceful_shutdown({
+            let alive = alive.clone();
+            async move {
+                let why = quit_rx.recv().await.unwrap_or("канал закрыт");
+                eprintln!("[выход] {why}");
+                // открытые SSE-каналы иначе держали бы сервер бесконечно
+                alive.close();
+            }
         })
         .await
         .unwrap();
 
     shutdown(&app).await;
     drop(live_capture);
+}
+
+/// Окно в отдельном потоке: ожидание браузера блокирующее. Окно считается
+/// закрытым по любому из признаков: вышел процесс профиля или страница
+/// 10 секунд не держит канал /api/alive.
+fn spawn_window(
+    url: String,
+    tx: tokio::sync::mpsc::UnboundedSender<&'static str>,
+    alive: Arc<alive::Alive>,
+) {
+    let rt = tokio::runtime::Handle::current();
+    std::thread::spawn(move || match window::open(&url) {
+        window::Opened::Window(w) => {
+            let t = tx.clone();
+            rt.spawn(async move {
+                alive::wait_closed(alive, 10).await;
+                let _ = t.send("окно закрыто (страница отключилась)");
+            });
+            w.wait();
+            let _ = tx.send("окно закрыто");
+        }
+        window::Opened::Detached => {
+            eprintln!("[окно] открыто без отслеживания - завершение по Ctrl+C");
+        }
+        window::Opened::Failed => {
+            eprintln!("[окно] браузер не найден, откройте {url} вручную");
+        }
+    });
+}
+
+/// Перезапуск с правами администратора. Новый экземпляр ждет нашего выхода,
+/// занимает тот же порт, и открытое окно продолжает работать с ним.
+async fn api_elevate(State(app): State<Shared>) -> impl IntoResponse {
+    #[cfg(windows)]
+    {
+        let (port, iface, quit) = {
+            let g = app.lock().unwrap();
+            (g.port, g.iface.clone(), g.quit.clone())
+        };
+        let mut args = format!(
+            "--port {port} --no-open --adopt --wait-pid {}",
+            std::process::id()
+        );
+        if iface != "any" {
+            args += &format!(" -i \"{iface}\"");
+        }
+        let r = tokio::task::spawn_blocking(move || elevate::relaunch(&args))
+            .await
+            .unwrap_or_else(|e| Err(e.to_string()));
+        match r {
+            Ok(()) => {
+                let _ = quit.send("перезапуск от имени администратора");
+                Json(json!({ "ok": true }))
+            }
+            Err(e) => Json(json!({ "ok": false, "error": e })),
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = app;
+        Json(json!({ "ok": false, "error": "только для Windows" }))
+    }
+}
+
+/// Имена из DNS-кеша Windows: без захвата это основной источник доменов.
+#[cfg(windows)]
+async fn dnscache_loop(app: Shared) {
+    loop {
+        if let Ok(pairs) = tokio::task::spawn_blocking(dnscache::snapshot).await {
+            let mut g = app.lock().unwrap();
+            for (name, ip) in pairs {
+                g.store.dns.insert(ip, name);
+            }
+        }
+        tokio::time::sleep(Duration::from_secs(3)).await;
+    }
 }
 
 /// Ctrl+C и SIGTERM (systemctl --user stop) ведут к тому же аккуратному выходу.
@@ -935,6 +1031,7 @@ async fn api_state(State(app): State<Shared>, Query(q): Query<StateQuery>) -> im
             "packets": g.store.packets_seen,
             "capture": g.capture_on,
             "capture_hint": g.capture_hint,
+            "elevate": g.can_elevate,
             "iface": g.iface,
         },
         "dump": {
@@ -962,9 +1059,9 @@ async fn api_select(State(app): State<Shared>, Json(b): Json<SelectBody>) -> imp
     Json(json!({ "ok": true, "group": g.group }))
 }
 
-/// BPF-фильтр по адресам, которые уже замечены у процесса. Без него дамп
+/// Публичные адреса, уже замеченные у процесса: ими ограничивается дамп. Без них
 /// соберет весь трафик хоста, и потом придется отделять чужое вручную.
-fn bpf_for_group(g: &App) -> Option<String> {
+fn hosts_for_group(g: &App) -> Vec<String> {
     let group: HashSet<i32> = g.group.iter().copied().collect();
     let hosts: HashSet<String> = g
         .store
@@ -974,12 +1071,9 @@ fn bpf_for_group(g: &App) -> Option<String> {
         .filter(|c| c.pid.map(|p| group.contains(&p)).unwrap_or(false))
         .map(|c| c.remote.clone())
         .collect();
-    if hosts.is_empty() {
-        return None;
-    }
-    let mut v: Vec<String> = hosts.into_iter().map(|h| format!("host {h}")).collect();
+    let mut v: Vec<String> = hosts.into_iter().collect();
     v.sort();
-    Some(v.join(" or "))
+    v
 }
 
 #[derive(Deserialize)]
@@ -1013,8 +1107,13 @@ async fn api_dump_start(State(app): State<Shared>, Json(b): Json<DumpBody>) -> i
     let _ = std::fs::create_dir_all(&dir);
     let path = format!("{dir}/{safe}-{}.pcapng", stamp());
     let iface = g.iface.clone();
-    let bpf = if b.filtered { bpf_for_group(&g) } else { None };
-    match g.dump.start(&iface, &path, bpf.as_deref()) {
+    let hosts = if b.filtered {
+        hosts_for_group(&g)
+    } else {
+        Vec::new()
+    };
+    let bpf = (!hosts.is_empty()).then(|| capture::bpf(&hosts));
+    match g.dump.start(&iface, &path, &hosts) {
         Ok(()) => Json(json!({ "ok": true, "path": path, "filter": bpf })),
         Err(e) => Json(json!({ "ok": false, "error": e.to_string() })),
     }

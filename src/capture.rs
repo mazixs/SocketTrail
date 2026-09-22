@@ -1,7 +1,9 @@
-//! Работа с dumpcap: живой поток пакетов и запись дампа в файл.
+//! Захват пакетов: живой поток и запись дампа в файл.
 //!
-//! dumpcap в системе несет cap_net_admin,cap_net_raw, а пользователь состоит
-//! в группе wireshark - поэтому захват идет без root и без запроса пароля.
+//! Linux: dumpcap с cap_net_admin,cap_net_raw, пользователь в группе wireshark -
+//! захват идет без root и без запроса пароля.
+//! Windows: свой захват через PktMon и ETW (src/etw.rs), с правами администратора.
+//! dumpcap из Wireshark остается запасным путем, если он установлен.
 
 use std::process::Stdio;
 
@@ -124,7 +126,7 @@ pub const NO_LOOPBACK: &str = "not ((net 127.0.0.0/8 or host ::1) and not port 5
 
 /// Живой разбор: snaplen 2048 байт хватает для DNS-ответа и TLS ClientHello,
 /// полезную нагрузку целиком тут держать незачем - для нее есть режим дампа.
-pub fn spawn_live(iface: &str, tx: UnboundedSender<Packet>) -> std::io::Result<Child> {
+fn spawn_live(iface: &str, tx: UnboundedSender<Packet>) -> std::io::Result<Child> {
     let mut child = command(iface, "2048", NO_LOOPBACK)
         .args(["-w", "-"])
         .stdout(Stdio::piped())
@@ -154,29 +156,84 @@ pub fn spawn_live(iface: &str, tx: UnboundedSender<Packet>) -> std::io::Result<C
     Ok(child)
 }
 
+/// Работающий живой захват. Drop останавливает его.
+pub enum Live {
+    Dumpcap(Box<Child>),
+    #[cfg(windows)]
+    Etw(#[allow(dead_code)] crate::etw::Session), // держится ради Drop
+}
+
+impl Live {
+    /// PID собственного процесса захвата, чтобы не показывать его соединения.
+    pub fn pid(&self) -> Option<u32> {
+        match self {
+            Live::Dumpcap(c) => c.id(),
+            #[cfg(windows)]
+            Live::Etw(_) => None,
+        }
+    }
+
+    pub fn describe(&self, iface: &str) -> String {
+        match self {
+            Live::Dumpcap(_) => format!("dumpcap, интерфейс {iface}"),
+            #[cfg(windows)]
+            Live::Etw(_) => "PktMon (ETW), все сетевые адаптеры".into(),
+        }
+    }
+}
+
+/// Запуск живого разбора. Err - подсказка для интерфейса, почему захвата нет.
+pub fn start_live(iface: &str, tx: UnboundedSender<Packet>) -> Result<Live, String> {
+    #[cfg(windows)]
+    let own_err = match crate::etw::start(tx.clone()) {
+        Ok(s) => return Ok(Live::Etw(s)),
+        Err(e) => e,
+    };
+    match probe() {
+        Ok(()) => spawn_live(iface, tx)
+            .map(|c| Live::Dumpcap(Box::new(c)))
+            .map_err(|e| format!("dumpcap не запустился: {e}")),
+        #[cfg(windows)]
+        Err(_) => Err(own_err),
+        #[cfg(not(windows))]
+        Err(e) => Err(e),
+    }
+}
+
 #[derive(Default)]
 pub struct Dump {
     child: Option<Child>,
+    /// дамп пишет свой захват (Windows, PktMon), а не отдельный dumpcap
+    own: bool,
     pub path: Option<String>,
     pub started_ms: Option<u64>,
 }
 
 impl Dump {
     pub fn is_running(&self) -> bool {
-        self.child.is_some()
+        self.child.is_some() || self.own
     }
 
-    /// Запись полных пакетов в один файл. Фильтр BPF ограничивает дамп
-    /// адресами выбранного процесса, иначе в файл попадет весь трафик хоста.
-    pub fn start(&mut self, iface: &str, path: &str, bpf: Option<&str>) -> std::io::Result<()> {
+    /// Запись полных пакетов в один файл. Адреса ограничивают дамп трафиком
+    /// выбранного процесса, иначе в файл попадет весь трафик хоста.
+    pub fn start(&mut self, iface: &str, path: &str, hosts: &[String]) -> std::io::Result<()> {
         if self.is_running() {
             return Ok(());
         }
-        let filter = match bpf {
-            Some(f) if !f.is_empty() => f,
-            _ => NO_LOOPBACK,
+        #[cfg(windows)]
+        if crate::etw::running() {
+            crate::etw::dump_start(path, hosts)?;
+            self.own = true;
+            self.path = Some(path.to_string());
+            self.started_ms = Some(crate::state::now_ms());
+            return Ok(());
+        }
+        let filter = if hosts.is_empty() {
+            NO_LOOPBACK.to_string()
+        } else {
+            bpf(hosts)
         };
-        let child = command(iface, "0", filter)
+        let child = command(iface, "0", &filter)
             .args(["-w", path])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -191,6 +248,13 @@ impl Dump {
     /// Мягкая остановка: по SIGTERM (Linux) или CTRL_BREAK (Windows) dumpcap
     /// дописывает и корректно закрывает файл. Если не успел - снимаем принудительно.
     pub async fn stop(&mut self) -> Option<String> {
+        if self.own {
+            #[cfg(windows)]
+            crate::etw::dump_stop();
+            self.own = false;
+            self.started_ms = None;
+            return self.path.clone();
+        }
         let mut child = self.child.take()?;
         if let Some(pid) = child.id() {
             soft_stop(pid);
@@ -202,6 +266,15 @@ impl Dump {
         self.started_ms = None;
         self.path.clone()
     }
+}
+
+/// BPF по адресам: "host a or host b".
+pub fn bpf(hosts: &[String]) -> String {
+    hosts
+        .iter()
+        .map(|h| format!("host {h}"))
+        .collect::<Vec<_>>()
+        .join(" or ")
 }
 
 #[cfg(unix)]

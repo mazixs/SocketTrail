@@ -148,6 +148,7 @@ main{display:flex;flex-direction:column;min-width:0;min-height:0}
  background:color-mix(in srgb,var(--warn) 12%,var(--panel));border-bottom:1px solid color-mix(in srgb,var(--warn) 35%,var(--line))}
 .warn>.ic{color:var(--warn);margin-top:2px}
 .warn b{color:var(--warn)}
+.warn button{margin-left:8px;vertical-align:middle}
 .warn pre{margin:6px 0 0;font-family:ui-monospace,monospace;font-size:var(--fs-s);color:var(--dim);white-space:pre-wrap}
 .bar{display:flex;align-items:center;gap:10px;padding:0 14px;min-height:50px;border-bottom:1px solid var(--line);
  background:var(--panel);flex-wrap:wrap}
@@ -349,16 +350,32 @@ async function api(url, opts){
 
 function showOffline(on){
   const w = $('#warn');
-  if (on){
+  w._html = '';
+  if (on && elevating){
+    w.innerHTML = ic('alert') + '<div><b>Перезапуск от имени администратора.</b> Окно подключится само через несколько секунд.</div>';
+    w.style.display = '';
+    w.dataset.offline = '1';
+  } else if (on){
     w.innerHTML = ic('alert') + '<div><b>Связь с SocketTrail потеряна.</b> Программа закрыта или остановлена. '
       + 'Данные в таблице - последние полученные. Запустите SocketTrail снова и обновите страницу.</div>';
     w.style.display = '';
     w.dataset.offline = '1';
     $('#capled').className = 'dot off';
   } else if (w.dataset.offline){
+    elevating = false;
     delete w.dataset.offline;
     w.style.display = 'none';
   }
+}
+
+// Перезапуск с правами: новый экземпляр займет тот же порт, страница переподключится.
+let elevating = false;
+async function elevate(){
+  const b = $('#btn-elevate');
+  if (b) b.disabled = true;
+  const r = await api('/api/elevate', {method:'POST'}) || {ok:false, error:'нет связи с SocketTrail'};
+  if (r.ok){ elevating = true; showOffline(true); }
+  else { toast('Не удалось перезапустить: ' + esc(r.error || ''), 'bad'); if (b) b.disabled = false; }
 }
 
 function toast(msg, kind){
@@ -695,9 +712,18 @@ async function refresh(){
     if (r.stats.capture || !r.stats.capture_hint){ w.style.display = 'none'; delete w.dataset.offline; }
     else {
       const [head, ...rest] = r.stats.capture_hint.split('\n');
-      w.innerHTML = ic('alert') + `<div><b>Пакетный захват выключен.</b> Домены и короткие соединения показаны не будут, `
-        + `остается только опрос сокетов. ${esc(head)}`
-        + (rest.length ? `<pre>${esc(rest.join('\n'))}</pre>` : '') + '</div>';
+      const html = ic('alert') + (r.stats.elevate
+        ? `<div><b>Захват пакетов выключен.</b> ${esc(head)} `
+          + `<button id="btn-elevate" class="primary">Перезапустить от администратора</button></div>`
+        : `<div><b>Пакетный захват выключен.</b> Домены и короткие соединения показаны не будут, `
+          + `остается только опрос сокетов. ${esc(head)}`
+          + (rest.length ? `<pre>${esc(rest.join('\n'))}</pre>` : '') + '</div>');
+      // перерисовка на каждом опросе сбивала бы наведение и нажатие кнопки
+      if (w._html !== html){
+        w.innerHTML = w._html = html;
+        const b = $('#btn-elevate');
+        if (b) b.onclick = elevate;
+      }
       w.style.display = '';
     }
 
@@ -719,6 +745,7 @@ async function refresh(){
     }
 
     renderDumpBtn(r.dump);
+    $('#btn-dump').title = r.stats.capture ? '' : 'Пакетный захват недоступен, запись может не начаться';
   } finally {
     state.busy = false;
   }
@@ -791,7 +818,7 @@ $('#btn-dump').onclick = async () => {
       || {ok:false, error:'нет связи с SocketTrail'};
     toast(r.ok ? `Запись идет в <span class="mono">${esc(r.path)}</span>`
         + (r.filter ? `<br><span class="dim">фильтр: ${esc(r.filter)}</span>` : '')
-      : 'Не удалось запустить dumpcap: ' + esc(r.error || ''), r.ok ? '' : 'bad');
+      : 'Не удалось начать запись: ' + esc(r.error || ''), r.ok ? '' : 'bad');
   }
   refresh();
 };

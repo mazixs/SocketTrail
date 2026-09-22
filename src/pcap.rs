@@ -101,7 +101,7 @@ impl PcapngReader {
 }
 
 /// Снятие канального заголовка. dumpcap -i any отдает LINUX_SLL или SLL2.
-fn parse_link(linktype: u16, d: &[u8]) -> Option<Packet> {
+pub fn parse_link(linktype: u16, d: &[u8]) -> Option<Packet> {
     let (ethertype, off) = match linktype {
         1 => (be16(d, 12)?, 14),   // Ethernet
         113 => (be16(d, 14)?, 16), // LINUX_SLL

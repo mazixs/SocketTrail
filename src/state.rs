@@ -298,26 +298,29 @@ impl Store {
         }
     }
 
-    /// Подтягивание имен из DNS к соединениям, у которых имени еще нет.
+    /// Подтягивание имен: SNI приоритетнее DNS, DNS приоритетнее PTR. DNS-имя
+    /// может прийти позже PTR (из кеша Windows или повторного запроса) и заменяет его.
     pub fn enrich_names(&mut self) {
         let dns = &self.dns;
         for c in self.conns.values_mut() {
-            if c.domain.is_some() {
+            if c.sni.is_some() {
                 continue;
             }
-            if let Ok(ip) = c.remote.parse::<IpAddr>()
-                && let Some(name) = dns.get(&ip)
-            {
-                c.domain = Some(name.clone());
+            let ip = c.remote.parse::<IpAddr>().ok();
+            if let Some(name) = ip.as_ref().and_then(|ip| dns.get(ip)) {
+                if c.domain.as_ref() != Some(name) {
+                    c.domain = Some(name.clone());
+                }
+                continue;
+            }
+            if c.domain.is_some() {
                 continue;
             }
             if let Some(ptr) = &c.ptr {
                 c.domain = Some(ptr.clone());
                 continue;
             }
-            if let Ok(ip) = c.remote.parse::<IpAddr>()
-                && let Some(label) = well_known_label(&ip, c.rport)
-            {
+            if let Some(label) = ip.and_then(|ip| well_known_label(&ip, c.rport)) {
                 c.domain = Some(label.to_string());
             }
         }
