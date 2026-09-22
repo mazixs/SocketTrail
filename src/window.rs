@@ -101,6 +101,7 @@ pub fn open(base: &str) -> Opened {
                 "--no-first-run",
                 "--no-default-browser-check",
                 "--disable-sync",
+                "--disable-background-mode",
                 "--disable-features=Translate,MediaRouter",
             ])
             .stdin(Stdio::null())

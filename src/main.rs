@@ -1,5 +1,6 @@
 //! SocketTrail - привязанный к процессу монитор сетевых соединений.
 
+mod alive;
 mod cache;
 mod capture;
 mod paths;
@@ -258,8 +259,13 @@ async fn main() {
     tokio::spawn(whois_loop(app.clone()));
     tokio::spawn(cache_loop(app.clone()));
 
+    let alive = Arc::new(alive::Alive::default());
     let router = Router::new()
         .route("/", get(index))
+        .route("/api/alive", {
+            let a = alive.clone();
+            get(move || async move { alive::stream(a) })
+        })
         .route(window::UI_PATH, get(index))
         .route("/api/ping", get(api_ping))
         .route("/api/procs", get(api_procs))
@@ -283,9 +289,17 @@ async fn main() {
     if args.open {
         let url = url.clone();
         let tx = quit_tx.clone();
-        // Ожидание браузера блокирующее, поэтому в отдельном потоке.
+        let rt = tokio::runtime::Handle::current();
+        // Ожидание браузера блокирующее, поэтому в отдельном потоке. Окно считается
+        // закрытым по любому из признаков: вышел процесс профиля или страница
+        // 10 секунд не держит канал /api/alive.
         std::thread::spawn(move || match window::open(&url) {
             window::Opened::Window(w) => {
+                let t = tx.clone();
+                rt.spawn(async move {
+                    alive::wait_closed(alive, 10).await;
+                    let _ = t.send("окно закрыто (страница отключилась)");
+                });
                 w.wait();
                 let _ = tx.send("окно закрыто");
             }

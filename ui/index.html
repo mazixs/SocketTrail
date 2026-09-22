@@ -853,6 +853,9 @@ initResizers();
 initAsideGrip();
 loadProcs();
 refresh();
+// Открытый канал - признак живого окна: по его закрытию сервер завершается.
+// EventSource сам переподключается после перезагрузки страницы.
+new EventSource('/api/alive');
 setInterval(loadProcs, 2500);
 setInterval(refresh, 1000);
 </script>
