@@ -1,0 +1,81 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  lint:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+          targets: x86_64-pc-windows-gnu
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends gcc-mingw-w64-x86-64 binutils-mingw-w64-x86-64
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets
+      - run: cargo clippy --all-targets --target x86_64-pc-windows-gnu
+
+  test-linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test
+      - run: cargo build --release
+      - run: packaging/smoke.sh target/release/sockettrail
+
+  # Быстрая проверка Windows-кода без Windows: mingw-сборка и тесты под Wine.
+  test-wine:
+    runs-on: ubuntu-24.04
+    env:
+      WINEDEBUG: -all
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-gnu
+      # Wine 9 из Ubuntu не отдает PID владельца в таблице сокетов, нужен WineHQ 10+.
+      - name: mingw-w64 и WineHQ stable
+        run: |
+          sudo dpkg --add-architecture i386
+          sudo mkdir -pm755 /etc/apt/keyrings
+          sudo curl -fsSLo /etc/apt/keyrings/winehq-archive.key https://dl.winehq.org/wine-builds/winehq.key
+          sudo curl -fsSLo /etc/apt/sources.list.d/winehq-noble.sources https://dl.winehq.org/wine-builds/ubuntu/dists/noble/winehq-noble.sources
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends gcc-mingw-w64-x86-64 binutils-mingw-w64-x86-64
+          sudo apt-get install -y --install-recommends winehq-stable
+          wine --version
+          wineboot --init
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --target x86_64-pc-windows-gnu
+      - run: cargo build --release --target x86_64-pc-windows-gnu
+      - run: packaging/smoke.sh wine target/x86_64-pc-windows-gnu/release/sockettrail.exe
+
+  test-windows:
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test -- --include-ignored
+      - run: cargo build --release
+      - run: packaging/smoke.sh target/release/sockettrail.exe
+        shell: bash

@@ -1,0 +1,87 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check-version:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - name: Тег совпадает с версией в Cargo.toml
+        run: |
+          v=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          [ "v$v" = "$GITHUB_REF_NAME" ] || { echo "тег $GITHUB_REF_NAME, а в Cargo.toml $v"; exit 1; }
+
+  build-deb:
+    needs: check-version
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends dpkg-dev
+      - run: make deb
+      - uses: actions/upload-artifact@v7
+        with:
+          name: deb
+          path: target/debian/*.deb
+          if-no-files-found: error
+
+  build-win:
+    needs: check-version
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Сборка zip (msvc, статический CRT)
+        shell: bash
+        env:
+          TARGET: x86_64-pc-windows-msvc
+          PYTHON: python
+        run: packaging/build-win.sh
+      - run: packaging/smoke.sh target/windows/SocketTrail/sockettrail.exe
+        shell: bash
+      - uses: actions/upload-artifact@v7
+        with:
+          name: win
+          path: target/windows/*.zip
+          if-no-files-found: error
+
+  release:
+    needs: [build-deb, build-win]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+      - run: cd dist && sha256sum -- * > SHA256SUMS && cat SHA256SUMS
+      - uses: actions/attest@v4
+        with:
+          subject-path: |
+            dist/*.deb
+            dist/*.zip
+      - name: Раздел CHANGELOG для этой версии
+        run: |
+          v=${GITHUB_REF_NAME#v}
+          awk -v h="## v$v" 'index($0,h)==1{f=1;next} /^## /{if(f)exit} f' CHANGELOG.md > notes.md
+          [ -s notes.md ] || echo "SocketTrail $GITHUB_REF_NAME" > notes.md
+      - uses: softprops/action-gh-release@v3
+        with:
+          body_path: notes.md
+          files: |
+            dist/*.deb
+            dist/*.zip
+            dist/SHA256SUMS
