@@ -198,14 +198,20 @@ impl Store {
     pub fn apply_sockets(
         &mut self,
         socks: &[SockEntry],
-        owners: &HashMap<u64, i32>,
         procs: &HashMap<i32, ProcInfo>,
     ) {
         let t = now_ms();
         let mut alive: HashSet<ConnKey> = HashSet::with_capacity(socks.len());
+        let mut udp_owner: HashMap<u16, i32> = HashMap::new();
         for s in socks {
             if s.rport == 0 {
-                continue; // слушающие сокеты в историю соединений не идут
+                // слушающие сокеты в историю не идут, но UDP-порт дает владельца пакетам
+                if s.proto == Proto::Udp
+                    && let Some(pid) = s.pid
+                {
+                    udp_owner.insert(s.lport, pid);
+                }
+                continue;
             }
             let k = ConnKey {
                 proto: s.proto,
@@ -214,8 +220,13 @@ impl Store {
                 remote: s.remote,
                 rport: s.rport,
             };
+            // TIME_WAIT без истории - ничей сокет (ни inode, ни PID): локальные сервисы
+            // оставляют их десятками тысяч, и они вытесняли бы живые соединения из истории.
+            if s.state == "TIME_WAIT" && !self.conns.contains_key(&k) {
+                continue;
+            }
             alive.insert(k);
-            let pid = owners.get(&s.inode).copied();
+            let pid = s.pid;
             let pname = pid.and_then(|p| procs.get(&p)).map(|p| p.name.clone());
             let c = self.entry(k, false);
             c.state = s.state.to_string();
@@ -229,6 +240,13 @@ impl Store {
             self.local_ips.insert(s.local);
         }
         for (k, c) in self.conns.iter_mut() {
+            if c.pid.is_none()
+                && k.proto == Proto::Udp
+                && let Some(&pid) = udp_owner.get(&k.lport)
+            {
+                c.pid = Some(pid);
+                c.pname = procs.get(&pid).map(|p| p.name.clone());
+            }
             if !c.closed && c.state != "NEW" && !alive.contains(k) {
                 c.closed = true;
                 if c.state != "TIME_WAIT" {

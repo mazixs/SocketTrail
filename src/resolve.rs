@@ -13,6 +13,7 @@
 
 use std::net::IpAddr;
 
+#[cfg(not(windows))]
 use tokio::process::Command;
 
 #[derive(Clone, Default)]
@@ -45,6 +46,7 @@ fn valid_name(s: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
 }
 
+#[cfg(not(windows))]
 fn have_resolvectl() -> bool {
     use std::sync::OnceLock;
     static OK: OnceLock<bool> = OnceLock::new();
@@ -61,8 +63,10 @@ fn have_resolvectl() -> bool {
 
 /// Верхняя граница на один запрос. Без нее зависший резолвер останавливает
 /// всю очередь опознания, и адреса остаются безымянными неограниченно долго.
+#[cfg(not(windows))]
 const CALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
+#[cfg(not(windows))]
 async fn run(bin: &str, args: &[&str]) -> Option<(String, String, bool)> {
     let fut = Command::new(bin).args(args).output();
     let out = tokio::time::timeout(CALL_TIMEOUT, fut).await.ok()?.ok()?;
@@ -73,6 +77,7 @@ async fn run(bin: &str, args: &[&str]) -> Option<(String, String, bool)> {
     ))
 }
 
+#[cfg(not(windows))]
 /// PTR через resolvectl: "192.0.2.35: 192-0-2-35.dynamic.example-isp.net -- link: eth0"
 async fn ptr_resolvectl(ip: &IpAddr) -> Answer {
     let Some((out, err, _)) = run("resolvectl", &["query", "--legend=no", &ip.to_string()]).await
@@ -103,6 +108,7 @@ async fn ptr_resolvectl(ip: &IpAddr) -> Answer {
     Answer::Failed
 }
 
+#[cfg(not(windows))]
 /// TXT через resolvectl: `name IN TXT "13335 | 104.16.0.0/12 | US | arin | ..."`
 async fn txt_resolvectl(name: &str) -> Answer {
     let Some((out, err, _)) =
@@ -123,6 +129,7 @@ async fn txt_resolvectl(name: &str) -> Answer {
     Answer::Failed
 }
 
+#[cfg(not(windows))]
 /// Запасной путь для систем без systemd-resolved. Диагностику dig печатает
 /// в stdout вперемешку с ответом, поэтому строки с ';' отбрасываем.
 async fn dig_short(args: &[&str]) -> Answer {
@@ -152,6 +159,7 @@ async fn dig_short(args: &[&str]) -> Answer {
     }
 }
 
+#[cfg(not(windows))]
 async fn ptr(ip: &IpAddr) -> Answer {
     if have_resolvectl() {
         match ptr_resolvectl(ip).await {
@@ -172,6 +180,7 @@ async fn ptr(ip: &IpAddr) -> Answer {
     }
 }
 
+#[cfg(not(windows))]
 async fn txt(name: &str) -> Answer {
     if have_resolvectl() {
         match txt_resolvectl(name).await {
@@ -190,6 +199,124 @@ fn reverse_name(ip: &IpAddr) -> Option<String> {
         }
         IpAddr::V6(_) => None, // origin6 у cymru отдельный, для первой версии не нужен
     }
+}
+
+/// Windows: системный резолвер (DnsQuery_W) учитывает DNS каждого адаптера,
+/// как resolvectl на Linux. Вызов блокирующий - уводим его в пул потоков.
+#[cfg(windows)]
+mod win {
+    use super::Answer;
+    use windows_sys::Win32::Foundation::DNS_ERROR_RCODE_NAME_ERROR;
+    use windows_sys::Win32::NetworkManagement::Dns::{
+        DNS_QUERY_STANDARD, DNS_RECORDW, DNS_TYPE_PTR, DNS_TYPE_TEXT, DnsFree, DnsFreeRecordList,
+        DnsQuery_W,
+    };
+
+    const DNS_INFO_NO_RECORDS: u32 = 9501;
+
+    unsafe fn wstr(p: *const u16) -> String {
+        if p.is_null() {
+            return String::new();
+        }
+        let mut n = 0;
+        while unsafe { *p.add(n) } != 0 {
+            n += 1;
+        }
+        String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(p, n) })
+    }
+
+    fn query(name: &str, ty: u16) -> Answer {
+        let wide: Vec<u16> = name.encode_utf16().chain(Some(0)).collect();
+        let mut res: *mut DNS_RECORDW = std::ptr::null_mut();
+        let rc = unsafe {
+            DnsQuery_W(
+                wide.as_ptr(),
+                ty,
+                DNS_QUERY_STANDARD,
+                std::ptr::null_mut(),
+                (&mut res as *mut *mut DNS_RECORDW).cast(),
+                std::ptr::null_mut(),
+            )
+        };
+        if rc == DNS_ERROR_RCODE_NAME_ERROR || rc == DNS_INFO_NO_RECORDS {
+            return Answer::Empty;
+        }
+        if rc != 0 {
+            return Answer::Failed;
+        }
+        let mut out = Answer::Empty;
+        let mut r = res;
+        while !r.is_null() {
+            let rec = unsafe { &*r };
+            if rec.wType == ty {
+                let v = unsafe {
+                    if ty == DNS_TYPE_PTR {
+                        wstr(rec.Data.PTR.pNameHost)
+                    } else {
+                        let t = &rec.Data.TXT;
+                        let arr = t.pStringArray.as_ptr();
+                        (0..t.dwStringCount as usize).map(|i| wstr(*arr.add(i))).collect()
+                    }
+                };
+                if !v.is_empty() {
+                    out = Answer::Ok(v);
+                    break;
+                }
+            }
+            r = rec.pNext;
+        }
+        if !res.is_null() {
+            unsafe { DnsFree(res.cast(), DnsFreeRecordList) };
+        }
+        out
+    }
+
+    async fn blocking(name: String, ty: u16) -> Answer {
+        let job = tokio::task::spawn_blocking(move || query(&name, ty));
+        match tokio::time::timeout(std::time::Duration::from_secs(5), job).await {
+            Ok(Ok(a)) => a,
+            _ => Answer::Failed,
+        }
+    }
+
+    pub async fn ptr(name: String) -> Answer {
+        blocking(name, DNS_TYPE_PTR).await
+    }
+
+    pub async fn txt(name: String) -> Answer {
+        blocking(name, DNS_TYPE_TEXT).await
+    }
+}
+
+/// Имя обратной зоны: 4.3.2.1.in-addr.arpa, для IPv6 - полубайты в ip6.arpa.
+#[cfg(windows)]
+fn arpa(ip: &IpAddr) -> String {
+    match ip {
+        IpAddr::V4(v4) => format!("{}.in-addr.arpa", reverse_name(ip).unwrap_or_else(|| v4.to_string())),
+        IpAddr::V6(v6) => {
+            let mut s = String::with_capacity(72);
+            for b in v6.octets().iter().rev() {
+                s.push_str(&format!("{:x}.{:x}.", b & 0xF, b >> 4));
+            }
+            s + "ip6.arpa"
+        }
+    }
+}
+
+#[cfg(windows)]
+async fn ptr(ip: &IpAddr) -> Answer {
+    match win::ptr(arpa(ip)).await {
+        Answer::Ok(s) => {
+            let s = s.trim_end_matches('.').to_string();
+            if valid_name(&s) { Answer::Ok(s) } else { Answer::Empty }
+        }
+        other => other,
+    }
+}
+
+#[cfg(windows)]
+async fn txt(name: &str) -> Answer {
+    win::txt(name.to_string()).await
 }
 
 pub async fn lookup(ip: IpAddr) -> Whois {
@@ -231,4 +358,20 @@ pub async fn lookup(ip: IpAddr) -> Whois {
         }
     }
     w
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Нужна сеть: cargo test -- --ignored. Под Wine 10 не проходит: DnsQuery_W
+    /// падает с кодом 8 на копировании EDNS-записи OPT, на Windows это не так.
+    #[tokio::test]
+    #[ignore]
+    async fn resolves_cloudflare() {
+        let w = lookup("1.1.1.1".parse().unwrap()).await;
+        assert_eq!(w.ptr.as_deref(), Some("one.one.one.one"));
+        assert_eq!(w.asn.as_deref(), Some("AS13335"));
+        assert!(w.owner.unwrap_or_default().contains("CLOUDFLARE"));
+    }
 }

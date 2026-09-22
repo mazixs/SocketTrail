@@ -327,6 +327,23 @@ fn spawn_signal_watch(tx: tokio::sync::mpsc::UnboundedSender<&'static str>) {
             let _ = tx.send("SIGTERM");
         }
     });
+    // Закрытие консольного окна, выход из системы, выключение: на очистку ~5 с.
+    #[cfg(windows)]
+    tokio::spawn(async move {
+        use tokio::signal::windows::{ctrl_break, ctrl_close, ctrl_logoff, ctrl_shutdown};
+        let (Ok(mut a), Ok(mut b), Ok(mut c), Ok(mut d)) =
+            (ctrl_close(), ctrl_shutdown(), ctrl_logoff(), ctrl_break())
+        else {
+            return;
+        };
+        let why = tokio::select! {
+            _ = a.recv() => "закрытие консоли",
+            _ = b.recv() => "выключение",
+            _ = c.recv() => "выход из системы",
+            _ = d.recv() => "Ctrl+Break",
+        };
+        let _ = tx.send(why);
+    });
 }
 
 /// Перед выходом: закрыть незавершенный дамп (иначе .pcapng останется без
@@ -390,8 +407,7 @@ async fn poll_loop(app: Shared) {
             (None, None) => Vec::new(),
         };
 
-        let socks = sockets::all_sockets();
-        let owners = sockets::inode_owners(&scan_pids);
+        let socks = sockets::snapshot(&scan_pids);
 
         {
             let mut g = app.lock().unwrap();
@@ -408,20 +424,24 @@ async fn poll_loop(app: Shared) {
                     mine.extend(procs::descendants(&p, r));
                 }
                 g.self_pids = mine;
-                let live_inodes: HashSet<u64> = socks
-                    .iter()
-                    .filter(|s| s.rport != 0)
-                    .map(|s| s.inode)
-                    .collect();
-                g.active_pids = owners
-                    .iter()
-                    .filter(|(ino, _)| live_inodes.contains(ino))
-                    .map(|(_, pid)| *pid)
-                    .collect();
                 g.procs = p;
             }
             let pmap: HashMap<i32, ProcInfo> = g.procs.iter().map(|p| (p.pid, p.clone())).collect();
-            g.store.apply_sockets(&socks, &owners, &pmap);
+            g.store.apply_sockets(&socks, &pmap);
+            if full {
+                // UDP без удаленного адреса (так всегда на Windows) активен, если по его порту идут пакеты
+                let recent = state::now_ms().saturating_sub(5_000);
+                let mut active: HashSet<i32> =
+                    socks.iter().filter(|s| s.rport != 0).filter_map(|s| s.pid).collect();
+                active.extend(
+                    g.store
+                        .conns
+                        .values()
+                        .filter(|c| c.proto == "UDP" && !c.closed && c.last_seen >= recent)
+                        .filter_map(|c| c.pid),
+                );
+                g.active_pids = active;
+            }
             g.store.enrich_names();
             apply_whois(&mut g);
         }
@@ -1144,7 +1164,25 @@ fn dirs_dumps() -> String {
 fn tz_offset() -> i64 {
     use std::sync::OnceLock;
     static OFF: OnceLock<i64> = OnceLock::new();
-    *OFF.get_or_init(|| {
+    *OFF.get_or_init(tz_offset_os)
+}
+
+/// Bias в минутах со знаком "UTC минус местное", плюс поправка текущего сезона.
+#[cfg(windows)]
+fn tz_offset_os() -> i64 {
+    use windows_sys::Win32::System::Time::{DYNAMIC_TIME_ZONE_INFORMATION, GetDynamicTimeZoneInformation};
+    let mut tz: DYNAMIC_TIME_ZONE_INFORMATION = unsafe { std::mem::zeroed() };
+    let bias = match unsafe { GetDynamicTimeZoneInformation(&mut tz) } {
+        1 => tz.Bias + tz.StandardBias,
+        2 => tz.Bias + tz.DaylightBias,
+        _ => tz.Bias,
+    };
+    -(bias as i64) * 60
+}
+
+#[cfg(not(windows))]
+fn tz_offset_os() -> i64 {
+    {
         let out = std::process::Command::new("date").arg("+%z").output();
         let s = out
             .ok()
@@ -1159,7 +1197,7 @@ fn tz_offset() -> i64 {
         } else {
             0
         }
-    })
+    }
 }
 
 fn human_time(ms: u64) -> String {

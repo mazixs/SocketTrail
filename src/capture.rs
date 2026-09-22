@@ -11,23 +11,105 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use crate::pcap::{Packet, PcapngReader};
 
+/// Путь к dumpcap. На Windows его нет в PATH: берем каталог установки Wireshark.
+pub fn dumpcap() -> &'static std::path::Path {
+    use std::sync::OnceLock;
+    static P: OnceLock<std::path::PathBuf> = OnceLock::new();
+    P.get_or_init(|| {
+        #[cfg(windows)]
+        {
+            let dirs = win::wireshark_dir()
+                .into_iter()
+                .chain(["ProgramFiles", "ProgramW6432", "ProgramFiles(x86)"].iter().filter_map(|v| {
+                    std::env::var_os(v).map(|d| std::path::PathBuf::from(d).join("Wireshark"))
+                }));
+            for d in dirs {
+                let exe = d.join("dumpcap.exe");
+                if exe.is_file() {
+                    return exe;
+                }
+            }
+        }
+        "dumpcap".into()
+    })
+}
+
+#[cfg(not(windows))]
+const INSTALL_HINT: &str = "dumpcap не найден. Установите пакет wireshark-common.";
+#[cfg(windows)]
+const INSTALL_HINT: &str = "dumpcap не найден. Установите Wireshark (https://www.wireshark.org) \
+     вместе с Npcap - галочка предлагается в установщике.";
+
+#[cfg(not(windows))]
+const RIGHTS_HINT: &str = "Права на захват выдаются так:\n  \
+     sudo dpkg-reconfigure wireshark-common   (ответить \"да\")\n  \
+     sudo usermod -aG wireshark \"$USER\"       (затем перелогиниться)";
+#[cfg(windows)]
+const RIGHTS_HINT: &str = "Npcap не видит сетевых адаптеров. Если при установке Npcap была \
+     включена опция \"Restrict Npcap driver's access to Administrators only\", запустите \
+     SocketTrail от имени администратора или переустановите Npcap без этой опции.";
+
 /// Проверка готовности захвата. `dumpcap -D` требует тех же прав, что и сам
 /// захват, поэтому отказ виден сразу, а не пустым окном через минуту.
 pub fn probe() -> Result<(), String> {
-    let out = std::process::Command::new("dumpcap").arg("-D").output();
+    let out = std::process::Command::new(dumpcap()).arg("-D").output();
     match out {
-        Err(_) => Err("dumpcap не найден. Установите пакет wireshark-common.".into()),
-        Ok(o) if o.status.success() => Ok(()),
+        Err(_) => Err(INSTALL_HINT.into()),
+        Ok(o) if o.status.success() => {
+            if cfg!(windows) && list_ifaces(&String::from_utf8_lossy(&o.stdout)).is_empty() {
+                return Err(RIGHTS_HINT.into());
+            }
+            Ok(())
+        }
         Ok(o) => {
             let err = String::from_utf8_lossy(&o.stderr);
             let first = err.lines().next().unwrap_or("неизвестная ошибка").trim();
-            Err(format!(
-                "{first}\nПрава на захват выдаются так:\n  \
-                 sudo dpkg-reconfigure wireshark-common   (ответить \"да\")\n  \
-                 sudo usermod -aG wireshark \"$USER\"       (затем перелогиниться)"
-            ))
+            Err(format!("{first}\n{RIGHTS_HINT}"))
         }
     }
+}
+
+/// Адаптеры из вывода `dumpcap -D` вида "1. \Device\NPF_{GUID} (Ethernet)".
+/// Loopback и WAN Miniport пропускаются: соединений наружу там нет, а на части
+/// виртуальных адаптеров захват не открывается и роняет весь dumpcap.
+fn list_ifaces(out: &str) -> Vec<String> {
+    out.lines()
+        .filter_map(|l| l.split_once(". ").map(|(_, rest)| rest.trim()))
+        .filter(|rest| rest.starts_with("\\Device\\NPF_"))
+        .filter(|rest| !rest.contains("NPF_Loopback") && !rest.contains("WAN Miniport"))
+        .filter_map(|rest| rest.split_whitespace().next().map(str::to_string))
+        .collect()
+}
+
+/// Аргументы -i. "any" на Windows не существует: вместо него все подходящие
+/// адаптеры сразу. Несколько интерфейсов можно перечислить через запятую.
+fn iface_args(iface: &str) -> Vec<String> {
+    let mut names: Vec<String> = iface
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    if cfg!(windows) && (names.is_empty() || names == ["any"]) {
+        names = std::process::Command::new(dumpcap())
+            .arg("-D")
+            .output()
+            .map(|o| list_ifaces(&String::from_utf8_lossy(&o.stdout)))
+            .unwrap_or_default();
+    }
+    names.into_iter().flat_map(|n| ["-i".to_string(), n]).collect()
+}
+
+/// Общие для живого потока и дампа параметры. -s, -f и -p до первого -i
+/// задают значения по умолчанию для всех интерфейсов. Без promiscuous-режима:
+/// нужен только трафик этого компьютера, а часть адаптеров его не поддерживает.
+fn command(iface: &str, snaplen: &str, filter: &str) -> Command {
+    let mut cmd = Command::new(dumpcap());
+    cmd.args(["-s", snaplen, "-f", filter, "-p"]);
+    cmd.args(iface_args(iface));
+    cmd.arg("-q");
+    #[cfg(windows)]
+    cmd.creation_flags(win::CREATE_NEW_PROCESS_GROUP);
+    cmd
 }
 
 /// Трафик loopback, кроме DNS. Локальные сервисы гоняют через lo гигабайты в
@@ -38,8 +120,8 @@ pub const NO_LOOPBACK: &str = "not ((net 127.0.0.0/8 or host ::1) and not port 5
 /// Живой разбор: snaplen 2048 байт хватает для DNS-ответа и TLS ClientHello,
 /// полезную нагрузку целиком тут держать незачем - для нее есть режим дампа.
 pub fn spawn_live(iface: &str, tx: UnboundedSender<Packet>) -> std::io::Result<Child> {
-    let mut child = Command::new("dumpcap")
-        .args(["-i", iface, "-s", "2048", "-q", "-w", "-", "-f", NO_LOOPBACK])
+    let mut child = command(iface, "2048", NO_LOOPBACK)
+        .args(["-w", "-"])
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .kill_on_drop(true)
@@ -85,14 +167,12 @@ impl Dump {
         if self.is_running() {
             return Ok(());
         }
-        let mut cmd = Command::new("dumpcap");
-        cmd.args(["-i", iface, "-s", "0", "-q", "-w", path]);
         let filter = match bpf {
             Some(f) if !f.is_empty() => f,
             _ => NO_LOOPBACK,
         };
-        cmd.args(["-f", filter]);
-        let child = cmd
+        let child = command(iface, "0", filter)
+            .args(["-w", path])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .kill_on_drop(true)
@@ -103,22 +183,89 @@ impl Dump {
         Ok(())
     }
 
-    /// Мягкая остановка: dumpcap по SIGTERM дописывает и корректно закрывает файл.
+    /// Мягкая остановка: по SIGTERM (Linux) или CTRL_BREAK (Windows) dumpcap
+    /// дописывает и корректно закрывает файл. Если не успел - снимаем принудительно.
     pub async fn stop(&mut self) -> Option<String> {
         let mut child = self.child.take()?;
         if let Some(pid) = child.id() {
-            unsafe {
-                libc_kill(pid as i32, 15);
-            }
+            soft_stop(pid);
         }
-        let _ = child.wait().await;
+        let waited = tokio::time::timeout(std::time::Duration::from_secs(5), child.wait()).await;
+        if waited.is_err() {
+            let _ = child.kill().await;
+        }
         self.started_ms = None;
         self.path.clone()
     }
 }
 
-// Минимальный внешний вызов вместо зависимости на весь крейт libc.
-unsafe extern "C" {
-    #[link_name = "kill"]
-    fn libc_kill(pid: i32, sig: i32) -> i32;
+#[cfg(unix)]
+fn soft_stop(pid: u32) {
+    // Минимальный внешний вызов вместо зависимости на весь крейт libc.
+    unsafe extern "C" {
+        fn kill(pid: i32, sig: i32) -> i32;
+    }
+    unsafe {
+        kill(pid as i32, 15);
+    }
+}
+
+/// CTRL_BREAK доходит только до группы процессов, поэтому dumpcap запускается
+/// с CREATE_NEW_PROCESS_GROUP; консоль у него общая с нами.
+#[cfg(windows)]
+fn soft_stop(pid: u32) {
+    use windows_sys::Win32::System::Console::{CTRL_BREAK_EVENT, GenerateConsoleCtrlEvent};
+    unsafe {
+        GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, pid);
+    }
+}
+
+#[cfg(windows)]
+mod win {
+    use windows_sys::Win32::System::Registry::{HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ, RegGetValueW};
+
+    pub const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+
+    fn wide(s: &str) -> Vec<u16> {
+        s.encode_utf16().chain(Some(0)).collect()
+    }
+
+    /// Каталог, который установщик Wireshark пишет в реестр.
+    pub fn wireshark_dir() -> Option<std::path::PathBuf> {
+        let key = wide(r"SOFTWARE\Wireshark");
+        let val = wide("InstallDir");
+        let mut buf = [0u16; 1024];
+        let mut len = (buf.len() * 2) as u32;
+        let rc = unsafe {
+            RegGetValueW(
+                HKEY_LOCAL_MACHINE,
+                key.as_ptr(),
+                val.as_ptr(),
+                RRF_RT_REG_SZ,
+                std::ptr::null_mut(),
+                buf.as_mut_ptr().cast(),
+                &mut len,
+            )
+        };
+        if rc != 0 {
+            return None;
+        }
+        let n = (len as usize / 2).saturating_sub(1);
+        Some(String::from_utf16_lossy(&buf[..n]).into())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_npcap_list() {
+        let out = "1. \\Device\\NPF_{A1B2} (Ethernet)\n\
+                   2. \\Device\\NPF_{C3D4} (Wi-Fi)\n\
+                   3. \\Device\\NPF_Loopback (Adapter for loopback traffic capture)\n\
+                   4. \\Device\\NPF_{E5F6} (WAN Miniport (IP))\n\
+                   5. etwdump (Event Tracing for Windows (ETW) reader)\n";
+        assert_eq!(list_ifaces(out), ["\\Device\\NPF_{A1B2}", "\\Device\\NPF_{C3D4}"]);
+    }
 }

@@ -1,38 +1,13 @@
-//! Снимок сокетов из /proc/net/* и привязка их к процессам через inode.
+//! Linux: сокеты из /proc/net/* и привязка их к процессам через inode.
 //!
 //! Замена `ss -tunp` в цикле: без форка на каждый опрос, поэтому интервал
 //! можно держать в районе 200 мс и ловить короткоживущие соединения.
 
-use serde::Serialize;
 use std::collections::HashMap;
 use std::fs;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
-pub enum Proto {
-    Tcp,
-    Udp,
-}
-
-impl Proto {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Proto::Tcp => "TCP",
-            Proto::Udp => "UDP",
-        }
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct SockEntry {
-    pub proto: Proto,
-    pub local: IpAddr,
-    pub lport: u16,
-    pub remote: IpAddr,
-    pub rport: u16,
-    pub state: &'static str,
-    pub inode: u64,
-}
+use super::{Proto, SockEntry, udp_state};
 
 /// Состояния TCP из /proc/net/tcp (поле st, шестнадцатеричное).
 fn tcp_state(code: u8) -> &'static str {
@@ -80,7 +55,7 @@ fn parse_addr(s: &str) -> Option<(IpAddr, u16)> {
     }
 }
 
-fn parse_table(path: &str, proto: Proto, out: &mut Vec<SockEntry>) {
+fn parse_table(path: &str, proto: Proto, out: &mut Vec<(SockEntry, u64)>) {
     let data = match fs::read_to_string(path) {
         Ok(d) => d,
         Err(_) => return,
@@ -101,38 +76,36 @@ fn parse_table(path: &str, proto: Proto, out: &mut Vec<SockEntry>) {
         let st = u8::from_str_radix(f[3], 16).unwrap_or(0);
         let state = match proto {
             Proto::Tcp => tcp_state(st),
-            Proto::Udp => {
-                if rport == 0 {
-                    "UNCONNECTED"
-                } else {
-                    "ACTIVE"
-                }
-            }
+            Proto::Udp => udp_state(rport),
         };
-        out.push(SockEntry {
-            proto,
-            local,
-            lport,
-            remote,
-            rport,
-            state,
-            inode: f[9].parse().unwrap_or(0),
-        });
+        let inode: u64 = f[9].parse().unwrap_or(0);
+        out.push((
+            SockEntry { proto, local, lport, remote, rport, state, pid: None },
+            inode,
+        ));
     }
 }
 
-pub fn all_sockets() -> Vec<SockEntry> {
-    let mut out = Vec::with_capacity(512);
-    parse_table("/proc/net/tcp", Proto::Tcp, &mut out);
-    parse_table("/proc/net/tcp6", Proto::Tcp, &mut out);
-    parse_table("/proc/net/udp", Proto::Udp, &mut out);
-    parse_table("/proc/net/udp6", Proto::Udp, &mut out);
-    out
+/// Владелец ищется только среди `scan_pids`: обход /proc/<pid>/fd всех процессов
+/// дорогой, поэтому полную карту строим редко, а в остальное время - по выбранной группе.
+pub fn snapshot(scan_pids: &[i32]) -> Vec<SockEntry> {
+    let mut raw = Vec::with_capacity(512);
+    parse_table("/proc/net/tcp", Proto::Tcp, &mut raw);
+    parse_table("/proc/net/tcp6", Proto::Tcp, &mut raw);
+    parse_table("/proc/net/udp", Proto::Udp, &mut raw);
+    parse_table("/proc/net/udp6", Proto::Udp, &mut raw);
+    let owners = inode_owners(scan_pids);
+    raw.into_iter()
+        .map(|(mut s, ino)| {
+            s.pid = owners.get(&ino).copied();
+            s
+        })
+        .collect()
 }
 
 /// inode сокета -> PID. Файловые дескрипторы общие для всех потоков процесса,
 /// поэтому обхода /proc/<pid>/fd достаточно, в /proc/<pid>/task лезть не нужно.
-pub fn inode_owners(pids: &[i32]) -> HashMap<u64, i32> {
+fn inode_owners(pids: &[i32]) -> HashMap<u64, i32> {
     let mut map = HashMap::new();
     for &pid in pids {
         let dir = match fs::read_dir(format!("/proc/{pid}/fd")) {
@@ -152,3 +125,4 @@ pub fn inode_owners(pids: &[i32]) -> HashMap<u64, i32> {
     }
     map
 }
+
