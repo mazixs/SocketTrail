@@ -1,251 +1,158 @@
+<div align="center">
+
+<img src="assets/sockettrail.svg" width="88" alt="">
+
 # SocketTrail
 
-English | [Русский](README.ru.md)
+**See which process talks to which domain.**<br>
+A network monitor for Linux and Windows that ties every connection to its process,
+including games under Proton and Wine.
 
-A network connection monitor tied to processes, including applications running
-under Proton and Wine. For every connection it shows the domain, IP, port,
-protocol, network owner and traffic volume, keeps a history (closed connections
-stay in the list) and records all traffic of the selected process into a single
-.pcapng file with one button.
+<a href="https://github.com/mazixs/SocketTrail/actions/workflows/ci.yml"><img src="https://github.com/mazixs/SocketTrail/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+<a href="https://github.com/mazixs/SocketTrail/releases/latest"><img src="https://img.shields.io/github/v/release/mazixs/SocketTrail?sort=semver" alt="Release"></a>
+<a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="License: MIT"></a>
+<img src="https://img.shields.io/badge/platform-Linux%20%7C%20Windows-555" alt="Platforms: Linux, Windows">
 
-```
- ● SocketTrail [x] process only [Record dump]  [Dumps][Copy][Report][JSON] EN|RU
-┌───────────────────────────┬──────────────────────────────────────────────────┐
-│ [With traffic|Proton|All] │ [Process|Whole host] [List|By address]           │
-├───────────────────────────┼──────────────────────────────────────────────────┤
-│ ● steam          PROTON   │ Time   State        Domain / name    Port    Out │
-│   └ srt-bwrap             │ 21:04  ESTABLISHED  api.example.com   443  12 KB │
-│     └ pv-adverb           │ 21:04  ESTABLISHED  cdn.example.net   443 3.1 MB │
-│       └ game.exe    ●     │ 21:03  TIME_WAIT    192.0.2.10      27015  840 B │
-│ ● chrome  x12             │ 21:03  ESTABLISHED  www.example.org   443  56 KB │
-│   firefox                 │ ...                                              │
-└───────────────────────────┴──────────────────────────────────────────────────┘
-```
+**English** | [Русский](README.ru.md)
 
-On the left is an auto-refreshing process tree, on the right is the connection
-history with domain, address, port, network owner and traffic volume. The
-"By address" mode collapses the history into one row per target with a session
-count.
+</div>
 
-## Why existing tools were not enough
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/main-en-dark.png">
+  <img alt="SocketTrail window: steamcmd.exe under Wine downloading from Valve, Akamai, Fastly and CloudFront, each connection with its domain, network owner and traffic" src="docs/images/main-en-light.png">
+</picture>
 
-- `ss -tunp` in a loop misses connections shorter than the polling interval, and
-  those are often the interesting ones (crash report uploads, API calls at startup).
-- `nethogs` and `iftop` show traffic volume, but not addresses or domains.
-- Wireshark sees packets, but does not know which process they belong to.
-- Under Proton there is more than one process: Steam, `pressure-vessel`,
-  `wineserver` and the `.exe` itself, and the sockets belong to child processes.
-  Picking a single PID loses half of the picture.
+<p align="center"><sub>A real session: <code>steamcmd.exe</code> under Wine downloads a dedicated server from several CDNs at once.</sub></p>
 
-SocketTrail combines both sources: fast polling of the socket tables gives the
-owner, and parsing the packet stream gives domains (DNS and SNI) and the
-connections that polling did not catch.
+Routing tools, split tunneling and proxy rules work with domains, while packet
+sniffers and firewalls mostly show IP addresses. SocketTrail closes the gap: pick a
+program and get the list of domains it really talks to, with ports, network owners
+and traffic, ready to be turned into rules.
 
-## Requirements
+## Features
 
-Linux (for Windows see the [Windows](#windows) section) and `dumpcap` from
-Wireshark. Root is not needed if the standard Wireshark setup is in place:
-`dumpcap` has capabilities and the user is in the `wireshark` group:
+- **Domains, not only IPs.** Names come from TLS SNI and DNS responses seen on the
+  wire, with PTR as a fallback, and are cached between runs.
+- **Knows the process tree.** Selecting a process brings in all its descendants.
+  Steam, pressure-vessel, wineserver and `game.exe` form one group, and sockets that
+  Wine duplicates in wineserver are attributed to the `.exe`.
+- **Catches short connections.** Sockets are polled every 250 ms, and packet parsing
+  adds connections that lived shorter than that: crash reporters, telemetry, API
+  calls at startup. Closed connections stay in the history.
+- **Shows who owns the network.** ASN and owner for every address: Valve, Akamai,
+  Fastly, Amazon and so on.
+- **One-button dumps.** Record the traffic of one process into `.pcapng`. The
+  recording stops by itself after the game exits, and every packet is labeled
+  `game.exe [pid] -> domain` for Wireshark.
+- **Export.** Self-contained HTML report, JSON, the table as TSV.
+- **No root on Linux, no Wireshark on Windows.** Linux uses `dumpcap` with
+  capabilities. Windows works without administrator rights and, with them, captures
+  through the built-in PktMon driver.
+- **English and Russian** interface.
+
+## Quick start
+
+### Linux
+
+On Ubuntu 24.04+ or Debian 13+ take the `.deb` from
+[Releases](https://github.com/mazixs/SocketTrail/releases/latest):
 
 ```sh
-sudo dpkg-reconfigure wireshark-common   # answer "yes"
+sudo apt install ./sockettrail_*_amd64.deb
+```
+
+On other distributions build from source. You need Rust and `dumpcap`
+(`wireshark-cli` on Arch and Fedora):
+
+```sh
+git clone https://github.com/mazixs/SocketTrail && cd SocketTrail
+./install.sh   # installs into ~/.local/bin and adds a menu shortcut, no root
+```
+
+Allow packet capture without root, once:
+
+```sh
+sudo dpkg-reconfigure wireshark-common   # Debian and Ubuntu, answer "Yes"
 sudo usermod -aG wireshark "$USER"       # then log out and back in
-getcap /usr/bin/dumpcap                  # cap_net_admin,cap_net_raw=eip
 ```
 
-Without `dumpcap` the tool still works, but only socket polling is left: there
-are no domains and no short connections, and the indicator in the header says so.
+Start **SocketTrail** from the application menu or run `sockettrail`.
 
-## Installation
+### Windows 10 and 11
 
-```sh
-./install.sh
-```
+Download `SocketTrail-<version>-windows-x64.zip` from
+[Releases](https://github.com/mazixs/SocketTrail/releases/latest), extract it and run
+`sockettrail.exe`. Nothing to install. The exe is not signed yet, so SmartScreen may
+ask: **More info** -> **Run anyway**.
 
-Puts the binary into `~/.local/bin`, a shortcut into the application menu and
-checks the environment: whether `dumpcap` is installed, whether it has capture
-rights, whether `~/.local/bin` is in `PATH`. Root is not needed. To undo, run
-`./uninstall.sh`.
+The process and connection list works right away. The **Restart as administrator**
+button in the window turns on packet capture: domains of browsers, traffic volume and
+dumps. Details are in [docs/windows.md](docs/windows.md).
 
-Or as a package for Debian and Ubuntu (requires glibc 2.39+, i.e. Ubuntu 24.04 or
-Debian 13 and newer):
-
-```sh
-make deb                                            # target/debian/sockettrail_<version>_amd64.deb
-sudo apt install ./target/debian/sockettrail_*.deb  # pulls in wireshark-common
-```
-
-The package installs the binary into `/usr/bin`, the shortcut and the icon, and a
-disabled user unit for background collection
-(`systemctl --user enable --now sockettrail`).
-
-## Running
-
-| How | Command |
-|---|---|
-| From the application menu | **SocketTrail** icon (Network category) |
-| From a terminal after installation | `sockettrail` |
-| From the repository, without installing | `./run.sh` - rebuilds if the sources are newer than the binary |
-| With make | `make run`, `make install`, `make check` |
-| Manually | `cargo build --release && ./target/release/sockettrail` |
-
-A separate window opens: Chrome, Chromium, Edge or Brave in app mode with its own
-profile in `~/.cache/sockettrail/ui-profile`. The window does not mix with your
-regular browser and has its own taskbar icon. **Closing the window exits the
-program**: an unfinished dump is finalized and gets its `.json` map, and the name
-cache is saved. Ctrl+C and SIGTERM do the same. Without a Chromium-based browser a
-regular tab opens, and the program then runs until Ctrl+C.
-
-The server listens on `127.0.0.1` only and rejects requests with a foreign `Host`
-(DNS rebinding) and POST requests from other sites (CSRF). Running it again does
-not start a second copy: if SocketTrail is already running, its window opens; if
-the port is taken by another program, the next one is used.
-
-Options: `-i <interface>` (default `any`), `--port <port>` (default 8787),
-`--no-open` - server only, no window, `--lang en|ru` - language, `--help` - help.
-
-### Language
-
-The interface is available in English and Russian, English by default. The
-EN | RU switch in the window header changes the language of the window, the HTML
-report and the console messages. The choice is saved in the `lang` file in the
-cache directory: `~/.cache/sockettrail/lang`, on Windows
-`%LOCALAPPDATA%\SocketTrail\lang`. The `--lang en|ru` option sets the language at
-startup.
-
-### Background collection, optional
-
-To have the history build up before the window is opened, for example from login
-until the game starts:
-
-```sh
-mkdir -p ~/.config/systemd/user
-cp assets/sockettrail.service ~/.config/systemd/user/
-systemctl --user enable --now sockettrail
-```
-
-Note that in this mode `dumpcap` runs all the time and parses all host traffic.
+> [!NOTE]
+> Domains fill in gradually. A name is learned when a program resolves it or opens
+> a TLS connection, so a connection opened before SocketTrail started may show a
+> bare IP for a while. Found names are saved and are there on the next run.
 
 ## Usage
 
-1. Pick a process on the left. The list refreshes by itself; a green dot means
-   active connections, the PROTON badge means the process runs under Proton or
-   Wine. Selecting a process automatically includes all its child processes.
-2. The table shows the connection history. Rows tagged "packets only" are
-   connections caught by packet parsing that never showed up in the socket table.
-3. "Record dump" writes `~/SocketTrail/<process>-<date>.pcapng`. This is the
-   SocketTrail folder in your home directory, not the repository directory of the
-   same name. The "Dumps" button in the header shows the full path and the list of
-   recorded files, and opens the folder in the file manager. With "process only"
-   checked, the file keeps the traffic of the selected process and its children,
-   including connections opened after the recording started. Such a recording
-   stops by itself 15 seconds after the process exits: you can start a dump, play
-   and not watch it. Without the checkbox all traffic of the computer is recorded.
-   On stop every packet is labeled with its process and domain, for example
-   `cs2.exe [1234] -> api.steampowered.com`. In Wireshark the label is in the
-   `frame.comment` field: show it as a column or filter with
-   `frame.comment contains "cs2.exe"`. A `.json` file with the map of connections,
-   domains and PIDs is saved next to the dump, so that a week later it is still
-   clear what was recorded.
-4. "Report" exports a self-contained HTML file that opens without internet access.
+1. **Pick a process** on the left. Its child processes come with it; the PROTON badge
+   marks programs under Proton or Wine.
+2. **Read the table.** Every connection has a domain, address, port, network owner
+   and traffic. **By address** collapses the history into one row per target.
+3. **Record a dump.** With **process only** checked, the file keeps the traffic of
+   the selected process. Start it, play, and the recording stops 15 seconds after the
+   game exits.
+4. **Export** a report, JSON or the table, or open the dump in Wireshark and filter
+   with `frame.comment contains "game.exe"`.
 
-### Small things that save time
+<details>
+<summary>More screenshots</summary>
+<br>
 
-- The process tree expands: a parent shows all its descendants, and a dozen
-  leaves with the same name (browser tabs, workers) collapse into one row like
-  `chrome x12`.
-- Column borders can be dragged; a double click on a border fits the column to
-  the longest value, so long domains are readable in full. Widths are
-  remembered, as is the width of the left panel.
-- The copy icon in a row puts the domain or address into the clipboard; "Copy"
-  in the header copies the whole visible table as TSV, ready for spreadsheets.
-- "By address" collapses the history by address and port: instead of three
-  hundred TIME_WAIT rows to one host you see one row with the session count and
-  traffic.
-- The "local addresses" and "SocketTrail connections" checkboxes show what is
-  hidden by default: requests to 127.0.0.53, mDNS, SSDP and the program's own
-  service traffic.
+**By address**: one row per target with the session count and total traffic.
 
-### About ports and names
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/by-address-en-dark.png">
+  <img alt="By address view: CDN addresses with session counts and total traffic" src="docs/images/by-address-en-light.png">
+</picture>
 
-The port is always real. For live connections it is read from
-`/proc/net/{tcp,tcp6,udp,udp6}`, for connections caught by packet parsing from the
-TCP or UDP header. There are no defaults, no guesses by service type and no other
-substitutions in the code: if the port is unknown, there is no row at all.
+**Dumps**: where files are saved and what has been recorded.
 
-The host name comes from four sources in order of reliability: SNI from the TLS
-ClientHello, DNS responses, the PTR record, then a label for special addresses
-(`127.0.0.53` is the system resolver itself and never has a domain). Found names
-are stored in `~/.cache/sockettrail/names.json` and survive a restart: a DNS
-response is seen only once, and without the cache a connection opened before
-SocketTrail started would stay nameless.
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/dumps-en-dark.png">
+  <img alt="Dumps panel with the dump folder and recorded .pcapng files" src="docs/images/dumps-en-light.png">
+</picture>
 
-## Architecture
+</details>
 
-| Module | Purpose |
-|---|---|
-| `src/procs/` | process inventory: /proc on Linux (plus Proton detection), Toolhelp32 on Windows; descendant tree |
-| `src/sockets/` | socket snapshot: /proc/net/* and inode -> PID on Linux, `GetExtendedTcpTable`/`GetExtendedUdpTable` on Windows |
-| `src/pcap.rs` | pcapng stream parsing, SNI from the TLS ClientHello and addresses from DNS responses |
-| `src/capture.rs` | dumpcap control: live stream and dump recording |
-| `src/resolve.rs` | PTR and ASN via resolvectl (fallback - dig), via `DnsQuery_W` on Windows, and Team Cymru; both are shown because they often differ |
-| `src/cache.rs` | on-disk cache of found names, so they are not lost between runs |
-| `src/state.rs` | connection history, counters, name merging |
-| `src/report.rs` | self-contained HTML report |
-| `src/i18n.rs` | English and Russian texts, language selection |
-| `src/window.rs` | window in a Chromium-based browser with its own profile, opening folders |
-| `src/paths.rs` | cache and dump directories |
-| `src/alive.rs` | SSE channel `/api/alive`: closing the window exits the program |
-| `src/annotate.rs` | dump post-processing on stop: packet labels, process traffic selection |
-| `src/etw.rs` | Windows: capture via PktMon and ETW, `.pcapng` recording |
-| `src/dnscache.rs` | Windows: names from the system DNS cache |
-| `src/elevate.rs` | Windows: privilege check and restart as administrator |
-| `ui/index.html` | user interface, embedded into the binary |
+## Documentation
 
-## Windows
+- [Usage guide](docs/usage.md): the window, dumps and Wireshark, command line,
+  background collection, where data is stored.
+- [Windows](docs/windows.md): modes with and without administrator rights, PktMon,
+  differences from Linux.
+- [How it works](docs/how-it-works.md): data sources, process attribution, name
+  resolution, code layout.
+- [Development](docs/development.md): building, tests, cross-compiling for Windows,
+  packages, releases.
+- [Changelog](CHANGELOG.md): what changed between versions.
 
-Portable zip: `sockettrail.exe`, `README.txt`, `LICENSE.txt`. No installation
-needed; the exe is built with a static CRT and depends only on system DLLs.
-Windows 10 and 11, x64.
+## Privacy
 
-- The process and connection list works right away and without administrator
-  rights. In this mode domains come from the Windows DNS cache
-  (`DnsGetCacheDataTable`, like `ipconfig /displaydns`): this covers games, Steam,
-  system services and most programs, but not Chrome and Edge, which have their own
-  DNS client. Domains appear gradually: the cache is polled every 3 seconds, and
-  the name of a connection opened before SocketTrail started is found only while
-  its record is still in the cache.
-- With administrator rights (the "Restart as administrator" button in the window)
-  SocketTrail runs its own packet capture: the PktMon driver built into Windows
-  (Windows 10 2004+ and 11) is started with the standard `pktmon` tool, and frames
-  are read from a dedicated ETW session. This gives domains from DNS responses and
-  SNI (browsers included), traffic volume and `.pcapng` dumps. Neither Wireshark
-  nor Npcap is needed.
-- If Wireshark with Npcap is installed and there are no administrator rights,
-  SocketTrail uses its `dumpcap.exe` as a fallback.
-- The window opens in Edge (or Chrome) in app mode. Closing the window or the
-  console exits the program, and the dump is finalized.
-- The exe is not signed yet, so SmartScreen shows a warning: "More info" ->
-  "Run anyway". Checksums and attestation are on the release page.
-- Dumps: `%USERPROFILE%\SocketTrail`, cache and window profile:
-  `%LOCALAPPDATA%\SocketTrail`.
+- The interface is served on `127.0.0.1` only. Requests with a foreign `Host` and
+  POST requests from other sites are rejected.
+- No telemetry, no accounts, no update checks.
+- The only outgoing requests are DNS lookups for address names: PTR through the
+  system resolver and ASN through
+  [Team Cymru](https://www.team-cymru.com/ip-asn-mapping) (`origin.asn.cymru.com`).
+- History, name cache and dumps stay on your disk.
 
-Differences from Linux: the Windows UDP table has no remote address, so UDP
-targets come only from packet parsing, and the owner is matched by local port.
-PktMon captures from all network adapters; the `-i` option applies only to the
-dumpcap fallback. While SocketTrail runs, `pktmon` is in use by it: starting
-another pktmon capture stops ours. Proton detection is not needed.
+## Contributing
 
-Build:
-
-```sh
-make win                                 # mingw-w64, target/windows/SocketTrail-<version>-windows-x64.zip
-cargo test --target x86_64-pc-windows-gnu  # tests under Wine (runner in .cargo/config.toml)
-```
-
-The release zip is built by CI on `windows-2025` (`x86_64-pc-windows-msvc`,
-`+crt-static`), see `.github/workflows/release.yml`.
+Bug reports and pull requests are welcome. Building and testing are described in
+[docs/development.md](docs/development.md).
 
 ## License
 
-MIT, see [LICENSE](LICENSE).
+[MIT](LICENSE)

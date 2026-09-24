@@ -6,3 +6,6 @@
 *.pcapng
 sockettrail-report-*.html
 /dumps/
+
+# Local notes and plans, not published
+/notes/
