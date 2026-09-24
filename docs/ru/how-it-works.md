@@ -63,8 +63,16 @@ PID владельца, процессы - из Toolhelp32.
 
 - DNS-ответы: имена, адреса и цепочки CNAME;
 - SNI из TLS ClientHello;
+- SNI из пакетов QUIC Initial (HTTP/3);
 - байты и пакеты по каждому соединению;
 - соединения, которых таблица сокетов так и не показала.
+
+QUIC шифрует даже первые пакеты, но ключи Initial выводятся из идентификатора
+соединения, который идет открытым текстом (RFC 9001), поэтому ClientHello читается без
+ключей сессии. Поддерживаются версии 1 и 2. Chrome раскладывает ClientHello на
+несколько пакетов и перемешивает кадры, поэтому куски собираются по смещению для
+каждого соединения. С Encrypted Client Hello (ECH), в TLS и в QUIC одинаково, виден
+только внешний SNI: публичное имя провайдера, например `cloudflare-ech.com`.
 
 ## Имена и владельцы сетей
 
@@ -113,6 +121,7 @@ SocketTrail, после перезапуска осталось бы без им
 | `src/procs/` | список процессов: `/proc` на Linux с определением Proton, Toolhelp32 на Windows; дерево потомков |
 | `src/sockets/` | снимок сокетов: `/proc/net/*` и inode -> PID на Linux, таблицы IP Helper на Windows |
 | `src/pcap.rs` | разбор потока pcapng, SNI из TLS ClientHello, DNS-ответы |
+| `src/quic.rs` | SNI из QUIC Initial: ключи, расшифровка, сборка ClientHello |
 | `src/capture.rs` | управление `dumpcap`: живой поток и запись дампа |
 | `src/etw.rs` | Windows: захват через PktMon и ETW, запись `.pcapng` |
 | `src/dnscache.rs` | Windows: имена из DNS-кеша системы |

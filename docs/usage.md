@@ -48,7 +48,7 @@ computer. **List** is the history row by row, **By address** is the summary belo
 - Closed connections stay in the list. Rows marked **packets only** were caught by
   packet parsing and never showed up in the socket table: they lived shorter than the
   250 ms polling interval.
-- The **SNI** badge means the name came from the TLS handshake of this very
+- The **SNI** badge means the name came from the TLS or QUIC handshake of this very
   connection, which is the most reliable source.
 - The filter box matches domain, IP, port and ASN.
 - **local addresses** shows traffic to 127.0.0.53, mDNS, SSDP and other local
@@ -132,7 +132,7 @@ defaults and no guesses by service type: if the port is unknown, there is no row
 
 The name of an address comes from four sources, in order of reliability:
 
-1. SNI from the TLS ClientHello of the connection.
+1. SNI from the ClientHello of the connection: TLS over TCP or QUIC.
 2. DNS responses seen in the traffic, including CNAME chains.
 3. The PTR record.
 4. A label for special addresses: `127.0.0.53` is the system resolver itself and

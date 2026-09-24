@@ -31,8 +31,9 @@ and traffic, ready to be turned into rules.
 
 ## Features
 
-- **Domains, not only IPs.** Names come from TLS SNI and DNS responses seen on the
-  wire, with PTR as a fallback, and are cached between runs.
+- **Domains, not only IPs.** Names come from SNI of TLS and QUIC (HTTP/3) handshakes
+  and DNS responses seen on the wire, with PTR as a fallback, and are cached between
+  runs.
 - **Knows the process tree.** Selecting a process brings in all its descendants.
   Steam, pressure-vessel, wineserver and `game.exe` form one group, and sockets that
   Wine duplicates in wineserver are attributed to the `.exe`.

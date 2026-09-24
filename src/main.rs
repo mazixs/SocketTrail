@@ -17,6 +17,7 @@ mod etw;
 mod paths;
 mod pcap;
 mod procs;
+mod quic;
 mod report;
 mod resolve;
 mod sockets;

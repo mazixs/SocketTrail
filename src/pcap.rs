@@ -1,8 +1,10 @@
 //! Разбор потока pcapng от dumpcap и извлечение из пакетов того, что
-//! опрос сокетов увидеть не может: имен из DNS-ответов и SNI из TLS ClientHello.
+//! опрос сокетов увидеть не может: имен из DNS-ответов и SNI из ClientHello
+//! TLS и QUIC.
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
+use crate::quic;
 use crate::sockets::Proto;
 
 #[derive(Debug, Clone)]
@@ -13,7 +15,7 @@ pub struct Packet {
     pub dst: IpAddr,
     pub dport: u16,
     pub bytes: u32,
-    /// Имя хоста из TLS ClientHello.
+    /// Имя хоста из ClientHello: TLS поверх TCP или QUIC.
     pub sni: Option<String>,
     /// Разобранный DNS-ответ: (имя, адрес) и цепочки CNAME.
     pub dns_addrs: Vec<(String, IpAddr)>,
@@ -37,6 +39,7 @@ pub struct PcapngReader {
     buf: Vec<u8>,
     /// linktype по индексу интерфейса, в порядке появления IDB
     linktypes: Vec<u16>,
+    quic: quic::Assembler,
 }
 
 impl PcapngReader {
@@ -44,6 +47,7 @@ impl PcapngReader {
         Self {
             buf: Vec::with_capacity(1 << 20),
             linktypes: Vec::new(),
+            quic: quic::Assembler::new(),
         }
     }
 
@@ -86,7 +90,7 @@ impl PcapngReader {
                             u32::from_le_bytes([body[12], body[13], body[14], body[15]]) as usize;
                         let lt = self.linktypes.get(iface).copied().unwrap_or(1);
                         if body.len() >= 20 + caplen
-                            && let Some(p) = parse_link(lt, &body[20..20 + caplen]) {
+                            && let Some(p) = parse_link_with(lt, &body[20..20 + caplen], Some(&mut self.quic)) {
                                 out.push(p);
                             }
                     }
@@ -100,8 +104,17 @@ impl PcapngReader {
     }
 }
 
-/// Снятие канального заголовка. dumpcap -i any отдает LINUX_SLL или SLL2.
+/// Разбор одного кадра без состояния: SNI из QUIC тут не собрать.
 pub fn parse_link(linktype: u16, d: &[u8]) -> Option<Packet> {
+    parse_link_with(linktype, d, None)
+}
+
+/// Снятие канального заголовка. dumpcap -i any отдает LINUX_SLL или SLL2.
+pub fn parse_link_with(
+    linktype: u16,
+    d: &[u8],
+    quic: Option<&mut quic::Assembler>,
+) -> Option<Packet> {
     let (ethertype, off) = match linktype {
         1 => (be16(d, 12)?, 14),   // Ethernet
         113 => (be16(d, 14)?, 16), // LINUX_SLL
@@ -114,13 +127,13 @@ pub fn parse_link(linktype: u16, d: &[u8]) -> Option<Packet> {
         _ => return None,
     };
     match ethertype {
-        0x0800 => parse_ipv4(d.get(off..)?),
-        0x86DD => parse_ipv6(d.get(off..)?),
+        0x0800 => parse_ipv4(d.get(off..)?, quic),
+        0x86DD => parse_ipv6(d.get(off..)?, quic),
         _ => None,
     }
 }
 
-fn parse_ipv4(d: &[u8]) -> Option<Packet> {
+fn parse_ipv4(d: &[u8], quic: Option<&mut quic::Assembler>) -> Option<Packet> {
     let ihl = (d.first()? & 0x0F) as usize * 4;
     if ihl < 20 || d.len() < ihl {
         return None;
@@ -129,10 +142,10 @@ fn parse_ipv4(d: &[u8]) -> Option<Packet> {
     let proto = *d.get(9)?;
     let src = IpAddr::V4(Ipv4Addr::new(d[12], d[13], d[14], d[15]));
     let dst = IpAddr::V4(Ipv4Addr::new(d[16], d[17], d[18], d[19]));
-    parse_l4(proto, src, dst, total, d.get(ihl..)?)
+    parse_l4(proto, src, dst, total, d.get(ihl..)?, quic)
 }
 
-fn parse_ipv6(d: &[u8]) -> Option<Packet> {
+fn parse_ipv6(d: &[u8], quic: Option<&mut quic::Assembler>) -> Option<Packet> {
     if d.len() < 40 {
         return None;
     }
@@ -144,10 +157,17 @@ fn parse_ipv6(d: &[u8]) -> Option<Packet> {
     t.copy_from_slice(&d[24..40]);
     let src = IpAddr::V6(Ipv6Addr::from(s));
     let dst = IpAddr::V6(Ipv6Addr::from(t));
-    parse_l4(next, src, dst, payload_len + 40, d.get(40..)?)
+    parse_l4(next, src, dst, payload_len + 40, d.get(40..)?, quic)
 }
 
-fn parse_l4(proto: u8, src: IpAddr, dst: IpAddr, bytes: u32, d: &[u8]) -> Option<Packet> {
+fn parse_l4(
+    proto: u8,
+    src: IpAddr,
+    dst: IpAddr,
+    bytes: u32,
+    d: &[u8],
+    quic: Option<&mut quic::Assembler>,
+) -> Option<Packet> {
     let (p, sport, dport, payload) = match proto {
         6 => {
             let off = ((*d.get(12)? >> 4) as usize) * 4;
@@ -182,6 +202,12 @@ fn parse_l4(proto: u8, src: IpAddr, dst: IpAddr, bytes: u32, d: &[u8]) -> Option
     if p == Proto::Tcp && !payload.is_empty() {
         pkt.sni = parse_sni(payload);
     }
+    if p == Proto::Udp
+        && payload.first().is_some_and(|b| b & 0x80 != 0)
+        && let Some(q) = quic
+    {
+        pkt.sni = q.feed(src, sport, payload);
+    }
     if (sport == 53 || dport == 53 || sport == 5353 || dport == 5353) && !payload.is_empty() {
         parse_dns(payload, &mut pkt);
     }
@@ -194,7 +220,11 @@ fn parse_sni(d: &[u8]) -> Option<String> {
     if *d.first()? != 0x16 || *d.get(1)? != 0x03 {
         return None;
     }
-    let rec = d.get(5..)?;
+    client_hello_sni(d.get(5..)?)
+}
+
+/// SNI из сообщения ClientHello: TLS кладет его в запись, QUIC - в кадры CRYPTO.
+pub fn client_hello_sni(rec: &[u8]) -> Option<String> {
     if *rec.first()? != 0x01 {
         return None; // не ClientHello
     }

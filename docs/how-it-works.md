@@ -66,8 +66,16 @@ From the packets SocketTrail takes:
 
 - DNS responses: names, addresses and CNAME chains;
 - SNI from the TLS ClientHello;
+- SNI from QUIC Initial packets (HTTP/3);
 - bytes and packets per connection;
 - connections that the socket table never showed.
+
+QUIC encrypts even the first packets, but the Initial keys are derived from the
+connection ID sent in the clear (RFC 9001), so the ClientHello can be read without
+the session keys. Versions 1 and 2 are supported. Chrome splits the ClientHello across
+several packets and shuffles the frames, so the pieces are put together by offset for
+each connection. With Encrypted Client Hello (ECH), in TLS and QUIC alike, only the
+outer SNI is visible: the provider's public name, for example `cloudflare-ech.com`.
 
 ## Names and network owners
 
@@ -116,6 +124,7 @@ channel stays silent for 10 seconds, the program finalizes the dump and exits.
 | `src/procs/` | process inventory: `/proc` on Linux with Proton detection, Toolhelp32 on Windows; descendant tree |
 | `src/sockets/` | socket snapshot: `/proc/net/*` and inode -> PID on Linux, IP Helper tables on Windows |
 | `src/pcap.rs` | pcapng stream parsing, SNI from the TLS ClientHello, DNS responses |
+| `src/quic.rs` | SNI from QUIC Initial: keys, decryption, reassembly of the ClientHello |
 | `src/capture.rs` | `dumpcap` control: live stream and dump recording |
 | `src/etw.rs` | Windows: capture through PktMon and ETW, `.pcapng` writing |
 | `src/dnscache.rs` | Windows: names from the system DNS cache |

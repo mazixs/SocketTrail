@@ -21,7 +21,7 @@ only on system DLLs. Windows 10 and 11, x64.
 | | Without administrator rights | As administrator |
 |---|---|---|
 | Processes and connections | yes | yes |
-| Domains | from the system DNS cache | from DNS responses and TLS SNI, browsers included |
+| Domains | from the system DNS cache | from DNS responses and SNI of TLS and QUIC, browsers included |
 | Traffic per connection | no | yes |
 | Dumps `.pcapng` | only through Wireshark's `dumpcap`, if installed | yes, through PktMon |
 | Extra software | none | none |

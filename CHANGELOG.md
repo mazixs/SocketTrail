@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Domains of QUIC (HTTP/3) connections: SNI is read from Initial packets of QUIC
+  versions 1 and 2 (RFC 9001, RFC 9369). A ClientHello split across several packets,
+  as Chrome sends it, is put together by offset. Previously browser connections over
+  UDP 443 were shown with only an IP unless a DNS response was seen.
 - Linux: sockets of programs under Wine are attributed to the `.exe` itself. Wine
   keeps a copy of every socket in `wineserver`, and connections of a game could go to
   `wineserver` when its PID was higher.

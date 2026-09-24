@@ -10,10 +10,13 @@ keywords = ["network", "monitor", "proton", "pcap", "linux"]
 categories = ["network-programming", "command-line-utilities"]
 
 [dependencies]
+aes-gcm = { version = "0.11.1", default-features = false, features = ["aes"] }
 axum = "0.8.9"
 futures-util = { version = "0.3.34", default-features = false }
+hkdf = "0.13.0"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
+sha2 = { version = "0.11.0", default-features = false }
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "process", "io-util", "time", "sync", "signal"] }
 
 [target."cfg(windows)".dependencies]

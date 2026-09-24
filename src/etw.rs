@@ -24,6 +24,7 @@ use windows_sys::Win32::System::Diagnostics::Etw::{
 
 use crate::i18n::Text;
 use crate::pcap::{self, Packet};
+use crate::quic;
 
 const SESSION: &str = "SocketTrail";
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -118,6 +119,7 @@ struct Sink {
     tx: UnboundedSender<Packet>,
     seen: Mutex<Dedup>,
     dump: Mutex<Option<DumpWriter>>,
+    quic: Mutex<quic::Assembler>,
     bad: AtomicU64,
 }
 
@@ -172,6 +174,7 @@ pub fn start(tx: UnboundedSender<Packet>) -> Result<Session, Text> {
                 set: HashSet::new(),
             }),
             dump: Mutex::new(None),
+            quic: Mutex::new(quic::Assembler::new()),
             bad: AtomicU64::new(0),
         })
         .is_err()
@@ -312,7 +315,10 @@ unsafe extern "system" fn on_event(ev: *mut EVENT_RECORD) {
             if linktype == 0 || !sink.seen.lock().map(|mut d| d.first(group)).unwrap_or(true) {
                 return;
             }
-            let parsed = pcap::parse_link(linktype, frame);
+            let parsed = {
+                let mut q = sink.quic.lock().ok();
+                pcap::parse_link_with(linktype, frame, q.as_deref_mut())
+            };
             if let Ok(mut d) = sink.dump.lock()
                 && let Some(w) = d.as_mut()
             {
