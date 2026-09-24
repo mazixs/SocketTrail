@@ -115,6 +115,7 @@ pub fn snapshot(scan_pids: &[i32]) -> Vec<SockEntry> {
 /// поэтому обхода /proc/<pid>/fd достаточно, в /proc/<pid>/task лезть не нужно.
 fn inode_owners(pids: &[i32]) -> HashMap<u64, i32> {
     let mut map = HashMap::new();
+    let mut wine = HashMap::new();
     for &pid in pids {
         let dir = match fs::read_dir(format!("/proc/{pid}/fd")) {
             Ok(d) => d,
@@ -126,10 +127,22 @@ fn inode_owners(pids: &[i32]) -> HashMap<u64, i32> {
                 if let Some(rest) = t.strip_prefix("socket:[")
                     && let Ok(ino) = rest.trim_end_matches(']').parse::<u64>()
                 {
-                    map.insert(ino, pid);
+                    let mut is_wine = |p: i32| *wine.entry(p).or_insert_with(|| is_wineserver(p));
+                    match map.get(&ino) {
+                        Some(&prev) if is_wine(pid) && !is_wine(prev) => {}
+                        _ => {
+                            map.insert(ino, pid);
+                        }
+                    }
                 }
             }
         }
     }
     map
+}
+
+/// Wine держит копию каждого сокета программы в wineserver. Владелец - сам .exe,
+/// иначе соединения игры уходят к wineserver, если его PID больше.
+fn is_wineserver(pid: i32) -> bool {
+    fs::read_to_string(format!("/proc/{pid}/comm")).is_ok_and(|c| c.trim_end() == "wineserver")
 }

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Linux: sockets of programs under Wine are attributed to the `.exe` itself. Wine
+  keeps a copy of every socket in `wineserver`, and connections of a game could go to
+  `wineserver` when its PID was higher.
 - English interface by default, Russian as the second language. The EN | RU switch
   in the window header changes the window, the HTML report and console messages;
   the choice is saved in the `lang` file in the cache directory. The `--lang en|ru`
