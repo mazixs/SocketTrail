@@ -243,7 +243,7 @@ tr:hover .copy,.copy:focus-visible{opacity:1}
     </div>
     <div class="spacer"></div>
     <div class="dumpctl">
-      <label class="opt" title="BPF-фильтр по уже известным адресам выбранного процесса"><input type="checkbox" id="onlyproc" checked> только адреса процесса</label>
+      <label class="opt" title="В файле останется только трафик выбранного процесса и его дочерних процессов. Запись остановится сама, когда процесс завершится"><input type="checkbox" id="onlyproc" checked> только процесс</label>
       <button id="btn-dump" class="primary"></button>
     </div>
     <div class="group" role="toolbar" aria-label="Экспорт">
@@ -694,6 +694,13 @@ async function refresh(){
 
     state.dump = r.dump;
     state.selected = r.selected;
+    const auto = r.dump.auto_stopped;
+    if (state.autoSeen === undefined) state.autoSeen = auto;
+    else if (auto && auto !== state.autoSeen){
+      state.autoSeen = auto;
+      toast(`Процесс завершился, запись остановлена: <span class="mono">${esc(auto)}</span>`);
+      if ($('#dumps').style.display !== 'none') renderDumps();
+    }
     // В сводке shown считает адреса, а matched - соединения: подписи разные,
     // иначе "747 (показано 124)" читается как обрезанная выдача.
     const total = state.view === 'agg' && r.targets ? r.targets.total : r.stats.matched;
@@ -817,7 +824,7 @@ $('#btn-dump').onclick = async () => {
       body: JSON.stringify({filtered: $('#onlyproc').checked && !!state.selected})})
       || {ok:false, error:'нет связи с SocketTrail'};
     toast(r.ok ? `Запись идет в <span class="mono">${esc(r.path)}</span>`
-        + (r.filter ? `<br><span class="dim">фильтр: ${esc(r.filter)}</span>` : '')
+        + (r.only ? `<br><span class="dim">только ${esc(r.only)} и его дочерние процессы, запись остановится сама после выхода</span>` : '')
       : 'Не удалось начать запись: ' + esc(r.error || ''), r.ok ? '' : 'bad');
   }
   refresh();

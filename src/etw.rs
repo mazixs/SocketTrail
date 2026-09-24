@@ -7,7 +7,6 @@
 
 use std::collections::{HashSet, VecDeque};
 use std::io::{BufWriter, Write};
-use std::net::IpAddr;
 use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
 use std::process::Command;
@@ -103,7 +102,6 @@ impl Dedup {
 
 struct DumpWriter {
     out: BufWriter<std::fs::File>,
-    hosts: HashSet<IpAddr>,
 }
 
 struct Sink {
@@ -300,14 +298,8 @@ unsafe extern "system" fn on_event(ev: *mut EVENT_RECORD) {
             if let Ok(mut d) = sink.dump.lock()
                 && let Some(w) = d.as_mut()
             {
-                let keep = w.hosts.is_empty()
-                    || parsed
-                        .as_ref()
-                        .is_some_and(|p| w.hosts.contains(&p.src) || w.hosts.contains(&p.dst));
-                if keep {
-                    let iface = if linktype == 1 { 0 } else { 1 };
-                    let _ = write_epb(&mut w.out, iface, h.TimeStamp, frame, orig);
-                }
+                let iface = if linktype == 1 { 0 } else { 1 };
+                let _ = write_epb(&mut w.out, iface, h.TimeStamp, frame, orig);
             }
             if let Some(p) = parsed {
                 let _ = sink.tx.send(p);
@@ -391,15 +383,14 @@ pub fn running() -> bool {
     SINK.get().is_some()
 }
 
-/// Запись дампа из уже идущего захвата. Пустой список адресов - весь трафик.
-pub fn dump_start(path: &str, hosts: &[String]) -> std::io::Result<()> {
+/// Запись дампа из уже идущего захвата.
+pub fn dump_start(path: &str) -> std::io::Result<()> {
     let sink = SINK
         .get()
         .ok_or_else(|| std::io::Error::other("захват не запущен"))?;
     let mut out = BufWriter::with_capacity(1 << 20, std::fs::File::create(path)?);
     write_header(&mut out)?;
-    let hosts = hosts.iter().filter_map(|h| h.parse().ok()).collect();
-    *sink.dump.lock().unwrap() = Some(DumpWriter { out, hosts });
+    *sink.dump.lock().unwrap() = Some(DumpWriter { out });
     Ok(())
 }
 

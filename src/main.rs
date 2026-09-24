@@ -1,6 +1,7 @@
 //! SocketTrail - привязанный к процессу монитор сетевых соединений.
 
 mod alive;
+mod annotate;
 mod cache;
 mod capture;
 #[cfg(windows)]
@@ -37,6 +38,20 @@ use serde_json::json;
 use crate::procs::ProcInfo;
 use crate::state::Store;
 
+/// Что снимает текущий дамп. Запоминается при старте: игра может закрыться раньше,
+/// чем запись остановят, и в списке процессов ее к тому времени уже не будет.
+struct DumpMeta {
+    process: Option<ProcInfo>,
+    only_group: bool,
+    /// все процессы группы, замеченные за время записи
+    pids: HashSet<i32>,
+    started: u64,
+    last_alive: u64,
+}
+
+/// Через столько после выхода всех процессов группы запись "только процесс" останавливается сама.
+const DUMP_IDLE_MS: u64 = 15_000;
+
 struct App {
     store: Store,
     procs: Vec<ProcInfo>,
@@ -45,6 +60,9 @@ struct App {
     selected: Option<i32>,
     group: Vec<i32>,
     dump: capture::Dump,
+    dump_meta: Option<DumpMeta>,
+    /// последний дамп, остановленный сам после выхода процесса: для уведомления в окне
+    auto_stopped: Option<String>,
     capture_on: bool,
     /// причина, по которой захват недоступен - показывается в интерфейсе
     capture_hint: Option<String>,
@@ -205,6 +223,8 @@ async fn main() {
         selected: None,
         group: Vec::new(),
         dump: capture::Dump::default(),
+        dump_meta: None,
+        auto_stopped: None,
         capture_on: false,
         capture_hint: None,
         iface: iface.clone(),
@@ -535,6 +555,7 @@ async fn poll_loop(app: Shared) {
                     mine.extend(procs::descendants(&p, r));
                 }
                 g.self_pids = mine;
+                track_dump(&mut g, &p);
                 g.procs = p;
             }
             let pmap: HashMap<i32, ProcInfo> = g.procs.iter().map(|p| (p.pid, p.clone())).collect();
@@ -558,6 +579,10 @@ async fn poll_loop(app: Shared) {
             }
             g.store.enrich_names();
             apply_whois(&mut g);
+        }
+        if full {
+            let a = app.clone();
+            tokio::spawn(async move { auto_stop_dump(&a).await });
         }
 
         tokio::time::sleep(Duration::from_millis(250)).await;
@@ -1038,6 +1063,8 @@ async fn api_state(State(app): State<Shared>, Query(q): Query<StateQuery>) -> im
             "running": g.dump.is_running(),
             "path": g.dump.path,
             "started": g.dump.started_ms,
+            "only": g.dump_meta.as_ref().is_some_and(|m| m.only_group),
+            "auto_stopped": g.auto_stopped,
         },
         "group": g.group,
         "selected": g.selected,
@@ -1057,23 +1084,6 @@ async fn api_select(State(app): State<Shared>, Json(b): Json<SelectBody>) -> imp
         None => Vec::new(),
     };
     Json(json!({ "ok": true, "group": g.group }))
-}
-
-/// Публичные адреса, уже замеченные у процесса: ими ограничивается дамп. Без них
-/// соберет весь трафик хоста, и потом придется отделять чужое вручную.
-fn hosts_for_group(g: &App) -> Vec<String> {
-    let group: HashSet<i32> = g.group.iter().copied().collect();
-    let hosts: HashSet<String> = g
-        .store
-        .conns
-        .values()
-        .filter(|c| c.scope == "public")
-        .filter(|c| c.pid.map(|p| group.contains(&p)).unwrap_or(false))
-        .map(|c| c.remote.clone())
-        .collect();
-    let mut v: Vec<String> = hosts.into_iter().collect();
-    v.sort();
-    v
 }
 
 #[derive(Deserialize)]
@@ -1107,16 +1117,23 @@ async fn api_dump_start(State(app): State<Shared>, Json(b): Json<DumpBody>) -> i
     let _ = std::fs::create_dir_all(&dir);
     let path = format!("{dir}/{safe}-{}.pcapng", stamp());
     let iface = g.iface.clone();
-    let hosts = if b.filtered {
-        hosts_for_group(&g)
-    } else {
-        Vec::new()
-    };
-    let bpf = (!hosts.is_empty()).then(|| capture::bpf(&hosts));
-    match g.dump.start(&iface, &path, &hosts) {
-        Ok(()) => Json(json!({ "ok": true, "path": path, "filter": bpf })),
-        Err(e) => Json(json!({ "ok": false, "error": e.to_string() })),
+    if let Err(e) = g.dump.start(&iface, &path) {
+        return Json(json!({ "ok": false, "error": e.to_string() }));
     }
+    let process = g
+        .selected
+        .and_then(|pid| g.procs.iter().find(|p| p.pid == pid).cloned());
+    let only_group = b.filtered && process.is_some();
+    let t = state::now_ms();
+    g.dump_meta = Some(DumpMeta {
+        only_group,
+        pids: g.group.iter().copied().collect(),
+        process,
+        started: t,
+        last_alive: t,
+    });
+    let only = only_group.then_some(name);
+    Json(json!({ "ok": true, "path": path, "only": only }))
 }
 
 async fn api_dump_stop(State(app): State<Shared>) -> impl IntoResponse {
@@ -1126,45 +1143,152 @@ async fn api_dump_stop(State(app): State<Shared>) -> impl IntoResponse {
 
 async fn finish_dump(app: &Shared) -> (Option<String>, u64, Option<String>) {
     // Child нужно забрать из-под мьютекса, ожидание делаем уже без блокировки.
-    let mut dump = {
+    let (mut dump, meta) = {
         let mut g = app.lock().unwrap();
-        std::mem::take(&mut g.dump)
+        (std::mem::take(&mut g.dump), g.dump_meta.take())
     };
     let path = dump.stop().await;
+
+    // Рядом с дампом кладем карту: какой процесс, какие адреса и домены.
+    // Через неделю по одному .pcapng уже не вспомнить, что именно снимали.
+    let mut sidecar = None;
+    if let (Some(p), Some(m)) = (&path, &meta) {
+        let (plan, info) = {
+            let g = app.lock().unwrap();
+            dump_plan(&g, m, p)
+        };
+        let file = p.clone();
+        let stats = tokio::task::spawn_blocking(move || plan.rewrite(&file))
+            .await
+            .map_err(std::io::Error::other)
+            .and_then(|r| r);
+        let mut info = info;
+        match stats {
+            Ok(st) => {
+                info["packets"] =
+                    json!({"total": st.packets, "kept": st.kept, "labeled": st.labeled});
+            }
+            Err(e) => eprintln!("[дамп] подписи не добавлены: {e}"),
+        }
+        let jp = p.trim_end_matches(".pcapng").to_string() + ".json";
+        if std::fs::write(&jp, serde_json::to_string_pretty(&info).unwrap_or_default()).is_ok() {
+            sidecar = Some(jp);
+        }
+    }
     let size = path
         .as_ref()
         .and_then(|p| std::fs::metadata(p).ok())
         .map(|m| m.len())
         .unwrap_or(0);
-
-    // Рядом с дампом кладем карту: какой процесс, какие адреса и домены.
-    // Через неделю по одному .pcapng уже не вспомнить, что именно снимали.
-    let mut sidecar = None;
-    if let Some(p) = &path {
-        let g = app.lock().unwrap();
-        let f = Filter {
-            only_selected: g.selected.is_some(),
-            query: String::new(),
-            show_local: true,
-            show_self: false,
-        };
-        let conns: Vec<&state::Conn> = select_conns(&g, &f);
-        let meta = json!({
-            "dump": p,
-            "captured_until": human_time(state::now_ms()),
-            "process": g.selected.and_then(|pid| g.procs.iter().find(|x| x.pid == pid))
-                .map(|x| json!({"pid": x.pid, "name": x.name, "cmdline": x.cmdline})),
-            "group_pids": g.group,
-            "conns": conns,
-        });
-        let jp = p.trim_end_matches(".pcapng").to_string() + ".json";
-        if std::fs::write(&jp, serde_json::to_string_pretty(&meta).unwrap_or_default()).is_ok() {
-            sidecar = Some(jp);
-        }
-    }
     // Вернуть dump обратно, чтобы путь к последнему файлу оставался виден в интерфейсе.
     app.lock().unwrap().dump = dump;
     (path, size, sidecar)
+}
+
+/// Соединения за время записи: владелец и домен для подписи пакетов, отбор
+/// трафика группы и карта для .json.
+fn dump_plan(g: &App, m: &DumpMeta, path: &str) -> (annotate::Plan, serde_json::Value) {
+    let mine = |c: &state::Conn| c.pid.is_some_and(|p| m.pids.contains(&p));
+    let group: Vec<&state::Conn> = g.store.conns.values().filter(|c| mine(c)).collect();
+    let hosts: HashSet<IpAddr> = group
+        .iter()
+        .filter(|c| c.scope == "public")
+        .filter_map(|c| c.remote.parse().ok())
+        .collect();
+    let domains: HashSet<&str> = group.iter().filter_map(|c| c.domain.as_deref()).collect();
+    let mut owners = HashMap::new();
+    let mut conns: Vec<&state::Conn> = Vec::new();
+    for (k, c) in &g.store.conns {
+        if c.last_seen < m.started {
+            continue;
+        }
+        // Соединение без владельца (короткое или замеченное уже в TIME_WAIT) относим к группе
+        // по адресу, а при известном домене - еще и по домену: за прокси и CDN адрес общий.
+        let keep = mine(c)
+            || (c.pid.is_none()
+                && hosts.contains(&k.remote)
+                && c.domain.as_deref().is_none_or(|d| domains.contains(d)));
+        owners.insert(
+            *k,
+            annotate::Owner {
+                label: annotate::label(c.pname.as_deref(), c.pid, c.domain.as_deref()),
+                keep,
+            },
+        );
+        if (keep || !m.only_group) && !c.pid.is_some_and(|p| g.self_pids.contains(&p)) {
+            conns.push(c);
+        }
+    }
+    conns.sort_by(|a, b| b.last_seen.cmp(&a.last_seen).then_with(|| a.id.cmp(&b.id)));
+
+    let who = m
+        .process
+        .as_ref()
+        .map(|p| format!("{} [{}]", p.name, p.pid));
+    let comment = match (&who, m.only_group) {
+        (Some(w), true) => format!("SocketTrail: только трафик {w} и его дочерних процессов"),
+        (Some(w), false) => format!("SocketTrail: весь трафик компьютера, выбран {w}"),
+        (None, _) => "SocketTrail: весь трафик компьютера".to_string(),
+    };
+    let mut pids: Vec<i32> = m.pids.iter().copied().collect();
+    pids.sort_unstable();
+    let info = json!({
+        "dump": path,
+        "captured_from": human_time(m.started),
+        "captured_until": human_time(state::now_ms()),
+        "only_process": m.only_group,
+        "process": m.process.as_ref()
+            .map(|x| json!({"pid": x.pid, "name": x.name, "cmdline": x.cmdline})),
+        "group_pids": pids,
+        "conns": conns,
+    });
+    let plan = annotate::Plan {
+        owners,
+        hosts,
+        only_group: m.only_group,
+        comment,
+    };
+    (plan, info)
+}
+
+/// Во время записи: копим PID группы (Proton порождает процессы на ходу) и
+/// отмечаем, жива ли она. Потомков ищем и от вышедшего корня: их могли переподвесить.
+fn track_dump(g: &mut App, list: &[ProcInfo]) {
+    let Some(m) = g.dump_meta.as_mut() else {
+        return;
+    };
+    let Some(root) = m.process.as_ref().map(|p| p.pid) else {
+        return;
+    };
+    let live: HashSet<i32> = list.iter().map(|p| p.pid).collect();
+    let roots: Vec<i32> = std::iter::once(root)
+        .chain(m.pids.iter().copied().filter(|p| live.contains(p)))
+        .collect();
+    for r in roots {
+        m.pids.extend(procs::descendants(list, r));
+    }
+    if m.pids.iter().any(|p| live.contains(p)) {
+        m.last_alive = state::now_ms();
+    }
+}
+
+/// Запись "только процесс" незачем держать после выхода игры: останавливаем сами.
+async fn auto_stop_dump(app: &Shared) {
+    let due = {
+        let g = app.lock().unwrap();
+        g.dump.is_running()
+            && g.dump_meta.as_ref().is_some_and(|m| {
+                m.only_group && state::now_ms().saturating_sub(m.last_alive) > DUMP_IDLE_MS
+            })
+    };
+    if !due {
+        return;
+    }
+    let (path, _, _) = finish_dump(app).await;
+    if let Some(p) = path {
+        eprintln!("[дамп] процесс завершился, запись остановлена: {p}");
+        app.lock().unwrap().auto_stopped = Some(p);
+    }
 }
 
 /// Список уже собранных дампов. Каталог называется так же, как репозиторий

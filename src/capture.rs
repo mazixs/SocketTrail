@@ -214,26 +214,21 @@ impl Dump {
         self.child.is_some() || self.own
     }
 
-    /// Запись полных пакетов в один файл. Адреса ограничивают дамп трафиком
-    /// выбранного процесса, иначе в файл попадет весь трафик хоста.
-    pub fn start(&mut self, iface: &str, path: &str, hosts: &[String]) -> std::io::Result<()> {
+    /// Запись полных пакетов в один файл. Трафик процесса отбирается при остановке
+    /// (src/annotate.rs): фильтр по адресам на старте потерял бы новые серверы.
+    pub fn start(&mut self, iface: &str, path: &str) -> std::io::Result<()> {
         if self.is_running() {
             return Ok(());
         }
         #[cfg(windows)]
         if crate::etw::running() {
-            crate::etw::dump_start(path, hosts)?;
+            crate::etw::dump_start(path)?;
             self.own = true;
             self.path = Some(path.to_string());
             self.started_ms = Some(crate::state::now_ms());
             return Ok(());
         }
-        let filter = if hosts.is_empty() {
-            NO_LOOPBACK.to_string()
-        } else {
-            bpf(hosts)
-        };
-        let child = command(iface, "0", &filter)
+        let child = command(iface, "0", NO_LOOPBACK)
             .args(["-w", path])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -266,15 +261,6 @@ impl Dump {
         self.started_ms = None;
         self.path.clone()
     }
-}
-
-/// BPF по адресам: "host a or host b".
-pub fn bpf(hosts: &[String]) -> String {
-    hosts
-        .iter()
-        .map(|h| format!("host {h}"))
-        .collect::<Vec<_>>()
-        .join(" or ")
 }
 
 #[cfg(unix)]
