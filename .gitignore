@@ -1,8 +1,8 @@
 /target
 .playwright-mcp/
 
-# Личные материалы и результаты работы утилиты, не относящиеся к коду
-aion2-network-report.html
+# Tool output: reports and dumps
+*-network-report.html
 *.pcapng
 sockettrail-report-*.html
 /dumps/

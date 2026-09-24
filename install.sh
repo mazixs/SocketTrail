@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Установка в домашний каталог: бинарь в ~/.local/bin, ярлык в меню приложений.
-# Права root не требуются.
+# Installs into the home directory: binary into ~/.local/bin, shortcut into the
+# application menu. No root required.
 set -euo pipefail
 cd "$(dirname "$0")"
 
-# XDG_DATA_HOME внутри snap-песочницы (терминал VS Code, например) указывает в
-# каталог самого snap, откуда ярлык в меню приложений не попадет. В таком случае
-# берем штатный ~/.local/share.
+# Inside a snap sandbox (e.g. the VS Code terminal) XDG_DATA_HOME points into the
+# snap's own directory, where the shortcut never reaches the application menu.
+# Fall back to the standard ~/.local/share then.
 DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
 case "$DATA_HOME" in
   */snap/*) DATA_HOME="$HOME/.local/share" ;;
@@ -19,10 +19,10 @@ esac
 APP_DIR="$DATA_HOME/applications"
 ICON_DIR="$DATA_HOME/icons/hicolor/scalable/apps"
 
-echo "== Сборка"
+echo "== Build"
 cargo build --release
 
-echo "== Установка"
+echo "== Install"
 mkdir -p "$BIN_DIR" "$APP_DIR" "$ICON_DIR"
 install -m 755 target/release/sockettrail "$BIN_DIR/sockettrail"
 install -m 644 assets/sockettrail.svg "$ICON_DIR/sockettrail.svg"
@@ -30,40 +30,40 @@ install -m 644 assets/sockettrail.svg "$ICON_DIR/sockettrail.svg"
 packaging/desktop.sh "$APP_DIR" "$BIN_DIR/sockettrail"
 
 command -v update-desktop-database >/dev/null && update-desktop-database "$APP_DIR" 2>/dev/null || true
-# Кеш иконок в домашнем каталоге не создаем: без него GTK сканирует каталог сам,
-# а устаревший кеш прячет иконки, добавленные позже, и держит удаленные.
+# No icon cache in the home directory: without it GTK scans the directory itself,
+# while a stale cache hides icons added later and keeps removed ones.
 
-echo "   бинарь:  $BIN_DIR/sockettrail"
-echo "   ярлык:   $APP_DIR/sockettrail.desktop"
+echo "   binary:    $BIN_DIR/sockettrail"
+echo "   shortcut:  $APP_DIR/sockettrail.desktop"
 
 echo
-echo "== Проверка окружения"
+echo "== Environment check"
 ok=1
 
 if ! command -v dumpcap >/dev/null; then
-  echo "  [нет] dumpcap не установлен"
+  echo "  [no]  dumpcap is not installed"
   echo "        sudo apt install wireshark-common"
   ok=0
 elif dumpcap -D >/dev/null 2>&1; then
-  echo "  [ок]  захват пакетов доступен без root"
+  echo "  [ok]  packet capture works without root"
 else
-  echo "  [нет] dumpcap есть, но прав на захват нет"
-  echo "        sudo dpkg-reconfigure wireshark-common   # ответить \"да\""
-  echo "        sudo usermod -aG wireshark \"$USER\"       # затем перелогиниться"
+  echo "  [no]  dumpcap is installed, but has no capture rights"
+  echo "        sudo dpkg-reconfigure wireshark-common   # answer \"yes\""
+  echo "        sudo usermod -aG wireshark \"$USER\"       # then log out and back in"
   ok=0
 fi
 
 case ":$PATH:" in
-  *":$BIN_DIR:"*) echo "  [ок]  $BIN_DIR есть в PATH" ;;
-  *) echo "  [нет] $BIN_DIR не в PATH"
+  *":$BIN_DIR:"*) echo "  [ok]  $BIN_DIR is in PATH" ;;
+  *) echo "  [no]  $BIN_DIR is not in PATH"
      echo "        echo 'export PATH=\"\$PATH:$BIN_DIR\"' >> ~/.bashrc && source ~/.bashrc"
      ok=0 ;;
 esac
 
 echo
 if [[ $ok -eq 1 ]]; then
-  echo "Готово. Запуск: sockettrail, либо SocketTrail в меню приложений."
+  echo "Done. Run: sockettrail, or SocketTrail in the application menu."
 else
-  echo "Установлено, но часть проверок не прошла - см. подсказки выше."
-  echo "Без прав на захват утилита работает, но доменов и коротких соединений не покажет."
+  echo "Installed, but some checks failed - see the hints above."
+  echo "Without capture rights the tool works, but shows no domains and no short connections."
 fi

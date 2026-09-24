@@ -49,7 +49,10 @@ pub fn relaunch(args: &str) -> Result<(), String> {
     if unsafe { ShellExecuteExW(&mut info) } == 0 {
         let e = std::io::Error::last_os_error();
         return Err(if e.raw_os_error() == Some(1223) {
-            "запуск от администратора отменен".into()
+            t!(
+                "launch as administrator was cancelled",
+                "запуск от администратора отменен"
+            )
         } else {
             e.to_string()
         });
@@ -66,7 +69,13 @@ pub fn wait_pid(pid: u32, secs: u32) {
         }
         let rc = WaitForSingleObject(h, secs * 1000);
         if rc == WAIT_TIMEOUT {
-            eprintln!("[запуск] прежний экземпляр {pid} не завершился за {secs} с");
+            eprintln!(
+                "{}",
+                t!(
+                    "[start] previous instance {pid} did not exit within {secs} s",
+                    "[запуск] прежний экземпляр {pid} не завершился за {secs} с"
+                )
+            );
         }
         CloseHandle(h);
     }

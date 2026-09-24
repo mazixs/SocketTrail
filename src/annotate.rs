@@ -123,7 +123,10 @@ impl Plan {
             let ty = le32(&head, 0);
             let len = le32(&head, 4) as usize;
             if !(12..=(1 << 26)).contains(&len) || !len.is_multiple_of(4) {
-                return Err(std::io::Error::other("поврежденный блок pcapng"));
+                return Err(std::io::Error::other(t!(
+                    "corrupted pcapng block",
+                    "поврежденный блок pcapng"
+                )));
             }
             body.resize(len - 8, 0);
             match r.read_exact(&mut body) {
@@ -136,7 +139,10 @@ impl Plan {
             match ty {
                 SHB => {
                     if body.len() < 16 || le32(&body, 0) != MAGIC {
-                        return Err(std::io::Error::other("pcapng с обратным порядком байт"));
+                        return Err(std::io::Error::other(t!(
+                            "big-endian pcapng",
+                            "pcapng с обратным порядком байт"
+                        )));
                     }
                     linktypes.clear();
                     write_block(&mut w, ty, &with_comment(&body, 16, &self.comment))?;
@@ -152,7 +158,10 @@ impl Plan {
                     let caplen = le32(&body, 12) as usize;
                     let fixed = 20 + caplen.div_ceil(4) * 4;
                     if body.len() < fixed {
-                        return Err(std::io::Error::other("поврежденный пакет pcapng"));
+                        return Err(std::io::Error::other(t!(
+                            "corrupted pcapng packet",
+                            "поврежденный пакет pcapng"
+                        )));
                     }
                     let lt = linktypes.get(le32(&body, 0) as usize).copied().unwrap_or(1);
                     let (keep, label) = self.judge(lt, &body[20..20 + caplen]);

@@ -122,7 +122,16 @@ pub fn open(base: &str) -> Opened {
                 }
                 return Opened::Window(Watch { child, profile });
             }
-            Err(e) => eprintln!("[окно] {} не запустился: {e}", browser.display()),
+            Err(e) => {
+                let b = browser.display();
+                eprintln!(
+                    "{}",
+                    t!(
+                        "[window] {b} did not start: {e}",
+                        "[окно] {b} не запустился: {e}"
+                    )
+                );
+            }
         }
     }
     if open_default(url) {

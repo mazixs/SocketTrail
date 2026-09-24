@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="ru">
+<html lang="__LANG__">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -236,59 +236,63 @@ tr:hover .copy,.copy:focus-visible{opacity:1}
     <div class="logo"><span class="dot" id="capled"></span>SocketTrail</div>
     <div class="sep"></div>
     <div class="stats">
-      <span id="s-matched-wrap"><b id="s-matched">0</b> в выборке</span>
-      <span><b id="s-stored">0</b> в истории</span>
-      <span><b id="s-pkts">0</b> пакетов</span>
-      <span>интерфейс <b id="s-if">-</b></span>
+      <span id="s-matched-wrap"><b id="s-matched">0</b> <span data-t>in view</span></span>
+      <span><b id="s-stored">0</b> <span data-t>in history</span></span>
+      <span><b id="s-pkts">0</b> <span data-t>packets</span></span>
+      <span><span data-t>interface</span> <b id="s-if">-</b></span>
     </div>
     <div class="spacer"></div>
     <div class="dumpctl">
-      <label class="opt" title="В файле останется только трафик выбранного процесса и его дочерних процессов. Запись остановится сама, когда процесс завершится"><input type="checkbox" id="onlyproc" checked> только процесс</label>
+      <label class="opt" title="Only traffic of the selected process and its child processes stays in the file. Recording stops by itself when the process exits"><input type="checkbox" id="onlyproc" checked> <span data-t>process only</span></label>
       <button id="btn-dump" class="primary"></button>
     </div>
-    <div class="group" role="toolbar" aria-label="Экспорт">
-      <button id="btn-folder" title="Папка с дампами и список файлов"><svg class="ic"><use href="#i-folder"/></svg>Дампы</button>
-      <button id="btn-copy" title="Скопировать показанную таблицу как TSV"><svg class="ic"><use href="#i-copy"/></svg>Копировать</button>
-      <button id="btn-html" title="Автономный HTML-отчет"><svg class="ic"><use href="#i-report"/></svg>Отчет</button>
-      <button id="btn-export" title="Выгрузка в JSON"><svg class="ic"><use href="#i-json"/></svg>JSON</button>
+    <div class="group" role="toolbar" aria-label="Export">
+      <button id="btn-folder" title="Dump folder and file list"><svg class="ic"><use href="#i-folder"/></svg><span data-t>Dumps</span></button>
+      <button id="btn-copy" title="Copy the shown table as TSV"><svg class="ic"><use href="#i-copy"/></svg><span data-t>Copy</span></button>
+      <button id="btn-html" title="Standalone HTML report"><svg class="ic"><use href="#i-report"/></svg><span data-t>Report</span></button>
+      <button id="btn-export" title="Export to JSON"><svg class="ic"><use href="#i-json"/></svg>JSON</button>
     </div>
-    <button id="btn-clear" class="ghost icon danger" title="Очистить историю соединений" aria-label="Очистить историю"><svg class="ic"><use href="#i-trash"/></svg></button>
+    <div class="group" id="lang" role="group" aria-label="Language" title="Language">
+      <button data-l="en">EN</button>
+      <button data-l="ru">RU</button>
+    </div>
+    <button id="btn-clear" class="ghost icon danger" title="Clear connection history" aria-label="Clear history"><svg class="ic"><use href="#i-trash"/></svg></button>
   </header>
 
   <aside>
     <div class="aside-top">
       <div class="field"><svg class="ic"><use href="#i-search"/></svg>
-        <input id="q" placeholder="Процесс: имя, PID, аргументы" aria-label="Поиск процесса"></div>
+        <input id="q" placeholder="Process: name, PID, arguments" aria-label="Process search"></div>
       <div class="aside-row">
         <div class="group full filters" role="tablist">
-          <button data-f="active" class="on">С трафиком</button>
+          <button data-f="active" class="on" data-t>With traffic</button>
           <button data-f="proton">Proton</button>
-          <button data-f="all">Все</button>
+          <button data-f="all" data-t>All</button>
         </div>
-        <label class="chk" title="Показать сам SocketTrail и его dumpcap"><input type="checkbox" id="showself"> свои</label>
+        <label class="chk" title="Show SocketTrail itself and its dumpcap"><input type="checkbox" id="showself"> <span data-t>self</span></label>
       </div>
     </div>
     <div class="plist" id="plist"></div>
-    <div class="aside-grip" id="aside-grip" title="Потяните, чтобы изменить ширину"></div>
+    <div class="aside-grip" id="aside-grip" title="Drag to change the width"></div>
   </aside>
 
   <main>
     <div id="warn" class="warn" style="display:none"></div>
     <div class="bar">
       <div class="group" id="scope">
-        <button data-s="proc" class="on">Процесс</button>
-        <button data-s="host">Весь хост</button>
+        <button data-s="proc" class="on" data-t>Process</button>
+        <button data-s="host" data-t>Whole host</button>
       </div>
       <div class="group" id="viewmode">
-        <button data-v="list" class="on">Список</button>
-        <button data-v="agg">Сводка по адресам</button>
+        <button data-v="list" class="on" data-t>List</button>
+        <button data-v="agg" data-t>By address</button>
       </div>
       <div class="field"><svg class="ic"><use href="#i-filter"/></svg>
-        <input id="qc" placeholder="Домен, IP, порт, ASN" aria-label="Фильтр соединений"></div>
-      <label class="chk"><input type="checkbox" id="showlocal"> локальные адреса</label>
-      <label class="chk"><input type="checkbox" id="showselfc"> соединения SocketTrail</label>
+        <input id="qc" placeholder="Domain, IP, port, ASN" aria-label="Connection filter"></div>
+      <label class="chk"><input type="checkbox" id="showlocal"> <span data-t>local addresses</span></label>
+      <label class="chk"><input type="checkbox" id="showselfc"> <span data-t>SocketTrail connections</span></label>
       <div class="spacer"></div>
-      <span class="selinfo" id="selinfo">процесс не выбран</span>
+      <span class="selinfo" id="selinfo"></span>
     </div>
     <div id="dumps" class="dumps" style="display:none"></div>
     <div class="tbl" id="tblwrap">
@@ -298,14 +302,16 @@ tr:hover .copy,.copy:focus-visible{opacity:1}
           <col data-k="net"><col data-k="proc"><col data-k="tx"><col data-k="rx">
         </colgroup>
         <thead><tr>
-          <th data-k="time">Время</th><th data-k="state">Состояние</th><th data-k="dom">Домен / имя</th>
-          <th data-k="ip">Адрес</th><th data-k="port">Порт</th><th data-k="net">Владелец сети</th>
-          <th data-k="proc" id="th-proc">Процесс</th><th data-k="tx" class="num">Исх.</th><th data-k="rx" class="num">Вх.</th>
+          <th data-k="time"><span data-t>Time</span></th><th data-k="state"><span data-t>State</span></th>
+          <th data-k="dom"><span data-t>Domain / name</span></th><th data-k="ip"><span data-t>Address</span></th>
+          <th data-k="port"><span data-t>Port</span></th><th data-k="net"><span data-t>Network owner</span></th>
+          <th data-k="proc"><span id="th-proc"></span></th><th data-k="tx" class="num"><span data-t>Out</span></th>
+          <th data-k="rx" class="num"><span data-t>In</span></th>
         </tr></thead>
         <tbody id="rows"></tbody>
       </table>
-      <div class="empty" id="empty"><h3>Пока пусто</h3>
-        <div>Выберите процесс слева или переключитесь на "Весь хост".</div></div>
+      <div class="empty" id="empty"><h3 data-t>Nothing here yet</h3>
+        <div data-t>Pick a process on the left or switch to "Whole host".</div></div>
     </div>
   </main>
 </div>
@@ -322,15 +328,104 @@ const state = {
 
 const DEFAULT_W = {time:84,state:118,dom:230,ip:150,port:84,net:170,proc:150,tx:84,rx:84};
 
-const fmtBytes = n => !n ? '-' : n < 1024 ? n+' Б' : n < 1048576 ? (n/1024).toFixed(1)+' КБ'
-  : (n/1048576).toFixed(2)+' МБ';
-const fmtTime = ms => new Date(ms).toLocaleTimeString('ru-RU',{hour12:false});
-const esc = s => (s??'').replace(/[<>&"]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[c]));
-const plural = (n, one, few, many) => {
-  const m10 = n % 10, m100 = n % 100;
-  return n + ' ' + (m10 === 1 && m100 !== 11 ? one
-    : m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14) ? few : many);
+/* ---------- язык: английский в разметке, русский из словаря ---------- */
+
+let LANG = document.documentElement.lang === 'ru' ? 'ru' : 'en';
+const RU = {
+  'in view': 'в выборке', 'in history': 'в истории', 'packets': 'пакетов', 'interface': 'интерфейс',
+  'process only': 'только процесс',
+  'Only traffic of the selected process and its child processes stays in the file. Recording stops by itself when the process exits':
+    'В файле останется только трафик выбранного процесса и его дочерних процессов. Запись остановится сама, когда процесс завершится',
+  'Export': 'Экспорт', 'Dumps': 'Дампы', 'Dump folder and file list': 'Папка с дампами и список файлов',
+  'Copy': 'Копировать', 'Copy the shown table as TSV': 'Скопировать показанную таблицу как TSV',
+  'Report': 'Отчет', 'Standalone HTML report': 'Автономный HTML-отчет', 'Export to JSON': 'Выгрузка в JSON',
+  'Language': 'Язык',
+  'Clear connection history': 'Очистить историю соединений', 'Clear history': 'Очистить историю',
+  'Process: name, PID, arguments': 'Процесс: имя, PID, аргументы', 'Process search': 'Поиск процесса',
+  'With traffic': 'С трафиком', 'All': 'Все',
+  'self': 'свои', 'Show SocketTrail itself and its dumpcap': 'Показать сам SocketTrail и его dumpcap',
+  'Drag to change the width': 'Потяните, чтобы изменить ширину',
+  'Drag to change the width. Double click fits the content': 'Потяните, чтобы изменить ширину. Двойной клик - по содержимому',
+  'Process': 'Процесс', 'Whole host': 'Весь хост', 'List': 'Список', 'By address': 'Сводка по адресам',
+  'Domain, IP, port, ASN': 'Домен, IP, порт, ASN', 'Connection filter': 'Фильтр соединений',
+  'local addresses': 'локальные адреса', 'SocketTrail connections': 'соединения SocketTrail',
+  'Time': 'Время', 'State': 'Состояние', 'Domain / name': 'Домен / имя', 'Address': 'Адрес', 'Port': 'Порт',
+  'Network owner': 'Владелец сети', 'Sessions': 'Сессии', 'Out': 'Исх.', 'In': 'Вх.',
+  'Nothing here yet': 'Пока пусто',
+  'Pick a process on the left or switch to "Whole host".': 'Выберите процесс слева или переключитесь на "Весь хост".',
+  'B': 'Б', 'KB': 'КБ', 'MB': 'МБ',
+  '<b>Restarting as administrator.</b> The window will reconnect by itself in a few seconds.':
+    '<b>Перезапуск от имени администратора.</b> Окно подключится само через несколько секунд.',
+  '<b>Connection to SocketTrail lost.</b> The program was closed or stopped. The table shows the last received data. Start SocketTrail again and reload the page.':
+    '<b>Связь с SocketTrail потеряна.</b> Программа закрыта или остановлена. Данные в таблице - последние полученные. Запустите SocketTrail снова и обновите страницу.',
+  'no connection to SocketTrail': 'нет связи с SocketTrail',
+  'Restart failed: {e}': 'Не удалось перезапустить: {e}',
+  'Copied: {w}': 'Скопировано: {w}',
+  'Nothing found': 'Ничего не найдено',
+  'no name': 'имени нет', 'packets only': 'только пакеты',
+  'Caught by packet parsing, not in the socket table': 'Поймано пакетным разбором, в таблицу сокетов не попало',
+  'Copy name': 'Скопировать имя', 'Copy address': 'Скопировать адрес', 'closed': 'закрыты',
+  'local port {p}, last activity {t}': 'локальный порт {p}, последняя активность {t}',
+  'last activity {t}': 'последняя активность {t}',
+  'Process exited, recording stopped: {p}': 'Процесс завершился, запись остановлена: {p}',
+  '<b>{a}</b> addresses, <b>{c}</b> connections': '<b>{a}</b> адресов, <b>{c}</b> соединений',
+  '<b>{n}</b> in view': '<b>{n}</b> в выборке', ', shown {n}': ', показано {n}',
+  'Packet capture is active': 'Пакетный захват активен', 'Packet capture unavailable': 'Пакетный захват недоступен',
+  '<b>Packet capture is off.</b> {h}': '<b>Захват пакетов выключен.</b> {h}',
+  'Restart as administrator': 'Перезапустить от администратора',
+  '<b>Packet capture is off.</b> Domains and short connections will not be shown, only socket polling remains. {h}':
+    '<b>Пакетный захват выключен.</b> Домены и короткие соединения показаны не будут, остается только опрос сокетов. {h}',
+  '{name} {pid}, group of {n}': '{name} {pid}, в группе {n}',
+  'no process selected, showing the whole host': 'процесс не выбран, показан весь хост',
+  'Packet capture unavailable, recording may not start': 'Пакетный захват недоступен, запись может не начаться',
+  'Stop': 'Остановить', 'Record dump': 'Собрать дамп',
+  'Dump saved: {p}': 'Дамп сохранен: {p}',
+  '(the "Dumps" button in the header opens the folder)': '(кнопка "Дампы" в шапке открывает папку)',
+  'connection map: {p}': 'карта соединений: {p}',
+  'Recording to {p}': 'Запись идет в {p}',
+  'only {w} and its child processes, recording stops by itself after it exits':
+    'только {w} и его дочерние процессы, запись остановится сама после выхода',
+  'Could not start recording: {e}': 'Не удалось начать запись: {e}',
+  'Dumps are saved to {d}': 'Дампы сохраняются в {d}', 'Open folder': 'Открыть папку', 'Copy path': 'Скопировать путь',
+  'Hide': 'Скрыть', 'No dumps recorded yet.': 'Пока ни одного дампа не собрано.',
+  'Could not open the folder, path: {d}': 'Не удалось открыть папку, путь: {d}',
 };
+const t = (en, vars) => {
+  const s = LANG === 'ru' && RU[en] || en;
+  return vars ? s.replace(/\{(\w+)\}/g, (m, k) => k in vars ? vars[k] : m) : s;
+};
+const loc = () => LANG === 'ru' ? 'ru-RU' : 'en-US';
+// en: [одно, много], ru: [1, 2-4, 5+]
+const plural = (n, en, ru) => {
+  if (LANG !== 'ru') return n + ' ' + (n === 1 ? en[0] : en[1]);
+  const m10 = n % 10, m100 = n % 100;
+  return n + ' ' + (m10 === 1 && m100 !== 11 ? ru[0]
+    : m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14) ? ru[1] : ru[2]);
+};
+
+// Надписи разметки: английские оригиналы запоминаются один раз, дальше переводятся из них.
+const ATTRS = ['title', 'placeholder', 'aria-label'];
+let statics = [];
+function collectStatics(){
+  statics = [];
+  document.querySelectorAll('[data-t]').forEach(el => statics.push({el, text: el.textContent}));
+  document.querySelectorAll(ATTRS.map(a => `[${a}]`).join(',')).forEach(el => {
+    for (const a of ATTRS) if (el.hasAttribute(a)) statics.push({el, attr: a, text: el.getAttribute(a)});
+  });
+}
+function applyLang(){
+  document.documentElement.lang = LANG;
+  for (const s of statics){
+    if (s.attr) s.el.setAttribute(s.attr, t(s.text)); else s.el.textContent = t(s.text);
+  }
+  document.querySelectorAll('#lang button').forEach(b => b.classList.toggle('on', b.dataset.l === LANG));
+}
+
+const fmtBytes = n => !n ? '-' : n < 1024 ? n + ' ' + t('B')
+  : n < 1048576 ? (n/1024).toFixed(1) + ' ' + t('KB') : (n/1048576).toFixed(2) + ' ' + t('MB');
+const fmtTime = ms => new Date(ms).toLocaleTimeString(loc(), {hour12:false});
+const fmtNum = v => v.toLocaleString(loc());
+const esc = s => (s??'').replace(/[<>&"]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[c]));
 
 // Связь с сервером: если SocketTrail закрыли, окно должно сказать об этом,
 // а не молча показывать устаревшую таблицу.
@@ -352,12 +447,12 @@ function showOffline(on){
   const w = $('#warn');
   w._html = '';
   if (on && elevating){
-    w.innerHTML = ic('alert') + '<div><b>Перезапуск от имени администратора.</b> Окно подключится само через несколько секунд.</div>';
+    w.innerHTML = ic('alert') + '<div>' + t('<b>Restarting as administrator.</b> The window will reconnect by itself in a few seconds.') + '</div>';
     w.style.display = '';
     w.dataset.offline = '1';
   } else if (on){
-    w.innerHTML = ic('alert') + '<div><b>Связь с SocketTrail потеряна.</b> Программа закрыта или остановлена. '
-      + 'Данные в таблице - последние полученные. Запустите SocketTrail снова и обновите страницу.</div>';
+    w.innerHTML = ic('alert') + '<div>' + t('<b>Connection to SocketTrail lost.</b> The program was closed or stopped. '
+      + 'The table shows the last received data. Start SocketTrail again and reload the page.') + '</div>';
     w.style.display = '';
     w.dataset.offline = '1';
     $('#capled').className = 'dot off';
@@ -373,29 +468,29 @@ let elevating = false;
 async function elevate(){
   const b = $('#btn-elevate');
   if (b) b.disabled = true;
-  const r = await api('/api/elevate', {method:'POST'}) || {ok:false, error:'нет связи с SocketTrail'};
+  const r = await api('/api/elevate', {method:'POST'}) || {ok:false, error:t('no connection to SocketTrail')};
   if (r.ok){ elevating = true; showOffline(true); }
-  else { toast('Не удалось перезапустить: ' + esc(r.error || ''), 'bad'); if (b) b.disabled = false; }
+  else { toast(t('Restart failed: {e}', {e: esc(r.error || '')}), 'bad'); if (b) b.disabled = false; }
 }
 
 function toast(msg, kind){
-  const t = $('#toast');
-  t.classList.toggle('bad', kind === 'bad');
-  t.innerHTML = ic(kind === 'bad' ? 'alert' : 'ok') + `<div>${msg}</div>`;
-  t.classList.add('show');
-  clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove('show'), 5200);
+  const el = $('#toast');
+  el.classList.toggle('bad', kind === 'bad');
+  el.innerHTML = ic(kind === 'bad' ? 'alert' : 'ok') + `<div>${msg}</div>`;
+  el.classList.add('show');
+  clearTimeout(el._h); el._h = setTimeout(() => el.classList.remove('show'), 5200);
 }
 
 async function copy(text, what){
   try {
     await navigator.clipboard.writeText(text);
-    toast(`Скопировано: ${esc(what)}`);
+    toast(t('Copied: {w}', {w: esc(what)}));
   } catch(e) {
     // clipboard недоступен без защищенного контекста - запасной путь через textarea
     const ta = document.createElement('textarea');
     ta.value = text; document.body.appendChild(ta); ta.select();
     document.execCommand('copy'); ta.remove();
-    toast(`Скопировано: ${esc(what)}`);
+    toast(t('Copied: {w}', {w: esc(what)}));
   }
 }
 
@@ -422,7 +517,7 @@ function initResizers(){
   document.querySelectorAll('#tbl thead th').forEach(th => {
     const grip = document.createElement('div');
     grip.className = 'grip';
-    grip.title = 'Потяните, чтобы изменить ширину. Двойной клик - по содержимому';
+    grip.title = 'Drag to change the width. Double click fits the content';
     th.appendChild(grip);
     const col = document.querySelector(`#tbl col[data-k="${th.dataset.k}"]`);
 
@@ -545,7 +640,7 @@ function renderProcs(){
   for (const r of roots) walk(r, 0);
 
   $('#plist').innerHTML = out.join('')
-    || '<div class="empty">Ничего не найдено</div>';
+    || `<div class="empty">${t('Nothing found')}</div>`;
 }
 
 function rowHtml(p, depth, nkids, collapsed){
@@ -606,19 +701,22 @@ $('#plist').addEventListener('click', async e => {
 
 const rowIndex = new Map(); // id -> {tr, sig}
 
+const copyBtn = (v, label) =>
+  `<button class="copy" data-copy="${esc(v)}" title="${t(label)}" aria-label="${t(label)}">${ic('copy')}</button>`;
+
 function listRow(c){
-  const dom = c.domain ? esc(c.domain) : '<span class="dim">имени нет</span>';
+  const dom = c.domain ? esc(c.domain) : `<span class="dim">${t('no name')}</span>`;
   const sni = c.sni ? '<span class="tag t-sni">SNI</span>' : '';
   const proc = c.pname
     ? `${esc(c.pname)} <span class="mono dim">${c.pid}</span>`
-    : '<span class="tag t-ghost" title="Поймано пакетным разбором, в таблицу сокетов не попало">только пакеты</span>';
+    : `<span class="tag t-ghost" title="${t('Caught by packet parsing, not in the socket table')}">${t('packets only')}</span>`;
   return [
     `<td class="mono dim">${fmtTime(c.first_seen)}</td>`,
     `<td><span class="st ${esc(c.state)}">${esc(c.state)}</span></td>`,
     `<td><div class="cell"><span class="txt" title="${esc(c.domain || '')}">${dom}</span>${sni}
-       <button class="copy" data-copy="${esc(c.domain || c.remote)}" title="Скопировать имя" aria-label="Скопировать имя">${ic('copy')}</button></div></td>`,
+       ${copyBtn(c.domain || c.remote, 'Copy name')}</div></td>`,
     `<td><div class="cell"><span class="txt mono ip">${esc(c.remote)}</span>
-       <button class="copy" data-copy="${esc(c.remote)}" title="Скопировать адрес" aria-label="Скопировать адрес">${ic('copy')}</button></div></td>`,
+       ${copyBtn(c.remote, 'Copy address')}</div></td>`,
     `<td class="mono">${c.rport}<span class="proto">${c.proto}</span></td>`,
     `<td class="dim" title="${esc((c.asn || '') + ' ' + (c.owner || ''))}">${esc(c.asn || '')} ${esc(c.owner || '')}</td>`,
     `<td>${proc}</td>`,
@@ -627,23 +725,23 @@ function listRow(c){
   ].join('');
 }
 
-function aggRow(t){
-  const dom = t.domain ? esc(t.domain) : '<span class="dim">имени нет</span>';
-  const sni = t.sni ? '<span class="tag t-sni">SNI</span>' : '';
-  const st = t.live ? `<span class="st live">${plural(t.live, 'активное', 'активных', 'активных')}</span>`
-                    : '<span class="st gone">закрыты</span>';
+function aggRow(a){
+  const dom = a.domain ? esc(a.domain) : `<span class="dim">${t('no name')}</span>`;
+  const sni = a.sni ? '<span class="tag t-sni">SNI</span>' : '';
+  const st = a.live ? `<span class="st live">${plural(a.live, ['active', 'active'], ['активное', 'активных', 'активных'])}</span>`
+                    : `<span class="st gone">${t('closed')}</span>`;
   return [
-    `<td class="mono dim">${fmtTime(t.first_seen)}</td>`,
+    `<td class="mono dim">${fmtTime(a.first_seen)}</td>`,
     `<td>${st}</td>`,
-    `<td><div class="cell"><span class="txt" title="${esc(t.domain || '')}">${dom}</span>${sni}
-       <button class="copy" data-copy="${esc(t.domain || t.remote)}" title="Скопировать имя" aria-label="Скопировать имя">${ic('copy')}</button></div></td>`,
-    `<td><div class="cell"><span class="txt mono ip">${esc(t.remote)}</span>
-       <button class="copy" data-copy="${esc(t.remote)}" title="Скопировать адрес" aria-label="Скопировать адрес">${ic('copy')}</button></div></td>`,
-    `<td class="mono">${t.rport}<span class="proto">${t.proto}</span></td>`,
-    `<td class="dim" title="${esc((t.asn || '') + ' ' + (t.owner || ''))}">${esc(t.asn || '')} ${esc(t.owner || '')}</td>`,
-    `<td class="dim">${plural(t.sessions, 'сессия', 'сессии', 'сессий')}</td>`,
-    `<td class="mono num">${fmtBytes(t.tx_bytes)}</td>`,
-    `<td class="mono num">${fmtBytes(t.rx_bytes)}</td>`,
+    `<td><div class="cell"><span class="txt" title="${esc(a.domain || '')}">${dom}</span>${sni}
+       ${copyBtn(a.domain || a.remote, 'Copy name')}</div></td>`,
+    `<td><div class="cell"><span class="txt mono ip">${esc(a.remote)}</span>
+       ${copyBtn(a.remote, 'Copy address')}</div></td>`,
+    `<td class="mono">${a.rport}<span class="proto">${a.proto}</span></td>`,
+    `<td class="dim" title="${esc((a.asn || '') + ' ' + (a.owner || ''))}">${esc(a.asn || '')} ${esc(a.owner || '')}</td>`,
+    `<td class="dim">${plural(a.sessions, ['session', 'sessions'], ['сессия', 'сессии', 'сессий'])}</td>`,
+    `<td class="mono num">${fmtBytes(a.tx_bytes)}</td>`,
+    `<td class="mono num">${fmtBytes(a.rx_bytes)}</td>`,
   ].join('');
 }
 
@@ -670,8 +768,8 @@ function renderRows(items, makeRow, sigOf){
     const dead = it.closed !== undefined ? it.closed : !it.live;
     rec.tr.className = dead ? 'dead' : '';
     rec.tr.title = it.lport !== undefined
-      ? `локальный порт ${it.lport}, последняя активность ${fmtTime(it.last_seen)}`
-      : `последняя активность ${fmtTime(it.last_seen)}`;
+      ? t('local port {p}, last activity {t}', {p: it.lport, t: fmtTime(it.last_seen)})
+      : t('last activity {t}', {t: fmtTime(it.last_seen)});
     // insertBefore перемещает уже существующий узел, пересоздавать его не нужно
     const next = prev ? prev.nextSibling : tbody.firstChild;
     if (next !== rec.tr) tbody.insertBefore(rec.tr, next);
@@ -698,32 +796,31 @@ async function refresh(){
     if (state.autoSeen === undefined) state.autoSeen = auto;
     else if (auto && auto !== state.autoSeen){
       state.autoSeen = auto;
-      toast(`Процесс завершился, запись остановлена: <span class="mono">${esc(auto)}</span>`);
+      toast(t('Process exited, recording stopped: {p}', {p: `<span class="mono">${esc(auto)}</span>`}));
       if ($('#dumps').style.display !== 'none') renderDumps();
     }
     // В сводке shown считает адреса, а matched - соединения: подписи разные,
     // иначе "747 (показано 124)" читается как обрезанная выдача.
     const total = state.view === 'agg' && r.targets ? r.targets.total : r.stats.matched;
-    const n = v => v.toLocaleString('ru-RU');
     $('#s-matched-wrap').innerHTML = state.view === 'agg'
-      ? `<b>${n(total)}</b> адресов, <b>${n(r.stats.matched)}</b> соединений`
-      : `<b>${n(r.stats.matched)}</b> в выборке`
-        + (r.stats.shown < r.stats.matched ? `, показано ${n(r.stats.shown)}` : '');
-    $('#s-stored').textContent = r.stats.stored.toLocaleString('ru-RU');
-    $('#s-pkts').textContent = r.stats.packets.toLocaleString('ru-RU');
+      ? t('<b>{a}</b> addresses, <b>{c}</b> connections', {a: fmtNum(total), c: fmtNum(r.stats.matched)})
+      : t('<b>{n}</b> in view', {n: fmtNum(r.stats.matched)})
+        + (r.stats.shown < r.stats.matched ? t(', shown {n}', {n: fmtNum(r.stats.shown)}) : '');
+    $('#s-stored').textContent = fmtNum(r.stats.stored);
+    $('#s-pkts').textContent = fmtNum(r.stats.packets);
     $('#s-if').textContent = r.stats.iface;
     $('#capled').className = 'dot' + (r.stats.capture ? '' : ' off');
-    $('#capled').title = r.stats.capture ? 'Пакетный захват активен' : 'Пакетный захват недоступен';
+    $('#capled').title = t(r.stats.capture ? 'Packet capture is active' : 'Packet capture unavailable');
 
     const w = $('#warn');
     if (r.stats.capture || !r.stats.capture_hint){ w.style.display = 'none'; delete w.dataset.offline; }
     else {
       const [head, ...rest] = r.stats.capture_hint.split('\n');
       const html = ic('alert') + (r.stats.elevate
-        ? `<div><b>Захват пакетов выключен.</b> ${esc(head)} `
-          + `<button id="btn-elevate" class="primary">Перезапустить от администратора</button></div>`
-        : `<div><b>Пакетный захват выключен.</b> Домены и короткие соединения показаны не будут, `
-          + `остается только опрос сокетов. ${esc(head)}`
+        ? `<div>${t('<b>Packet capture is off.</b> {h}', {h: esc(head)})} `
+          + `<button id="btn-elevate" class="primary">${t('Restart as administrator')}</button></div>`
+        : `<div>${t('<b>Packet capture is off.</b> Domains and short connections will not be shown, '
+          + 'only socket polling remains. {h}', {h: esc(head)})}`
           + (rest.length ? `<pre>${esc(rest.join('\n'))}</pre>` : '') + '</div>');
       // перерисовка на каждом опросе сбивала бы наведение и нажатие кнопки
       if (w._html !== html){
@@ -736,23 +833,24 @@ async function refresh(){
 
     const proc = state.procs.find(p => p.pid === r.selected);
     $('#selinfo').innerHTML = proc
-      ? `${esc(proc.name)} <b class="mono">${proc.pid}</b>, в группе ${plural(r.group.length, 'процесс', 'процесса', 'процессов')}`
-      : 'процесс не выбран, показан весь хост';
+      ? t('{name} {pid}, group of {n}', {name: esc(proc.name), pid: `<b class="mono">${proc.pid}</b>`,
+          n: plural(r.group.length, ['process', 'processes'], ['процесс', 'процесса', 'процессов'])})
+      : t('no process selected, showing the whole host');
     $('#selinfo').title = $('#selinfo').textContent;
 
-    $('#th-proc').textContent = state.view === 'agg' ? 'Сессии' : 'Процесс';
+    $('#th-proc').textContent = t(state.view === 'agg' ? 'Sessions' : 'Process');
     const items = state.view === 'agg' ? (r.targets ? r.targets.items : []) : r.conns;
     state.lastRows = items;
     $('#empty').style.display = items.length ? 'none' : '';
 
     if (state.view === 'agg'){
-      renderRows(items, aggRow, t => `${t.live}|${t.sessions}|${t.tx_bytes}|${t.rx_bytes}|${t.domain}|${t.asn}`);
+      renderRows(items, aggRow, a => `${a.live}|${a.sessions}|${a.tx_bytes}|${a.rx_bytes}|${a.domain}|${a.asn}`);
     } else {
       renderRows(items, listRow, c => `${c.state}|${c.tx_bytes}|${c.rx_bytes}|${c.domain}|${c.asn}|${c.pname}`);
     }
 
     renderDumpBtn(r.dump);
-    $('#btn-dump').title = r.stats.capture ? '' : 'Пакетный захват недоступен, запись может не начаться';
+    $('#btn-dump').title = r.stats.capture ? '' : t('Packet capture unavailable, recording may not start');
   } finally {
     state.busy = false;
   }
@@ -763,11 +861,11 @@ function renderDumpBtn(d){
   let html;
   if (d && d.running){
     const s = d.started ? Math.max(0, Math.floor((Date.now() - d.started) / 1000)) : 0;
-    const t = String(Math.floor(s / 60)).padStart(2, '0') + ':' + String(s % 60).padStart(2, '0');
-    html = `<span class="rdot"></span>Остановить<span class="rtime">${t}</span>`;
+    const mmss = String(Math.floor(s / 60)).padStart(2, '0') + ':' + String(s % 60).padStart(2, '0');
+    html = `<span class="rdot"></span>${t('Stop')}<span class="rtime">${mmss}</span>`;
     b.className = 'rec';
   } else {
-    html = ic('rec') + 'Собрать дамп';
+    html = ic('rec') + t('Record dump');
     b.className = 'primary';
   }
   if (b._html !== html){ b.innerHTML = html; b._html = html; }
@@ -814,26 +912,30 @@ function hardRefresh(){
 $('#btn-dump').onclick = async () => {
   if (state.dump && state.dump.running){
     const r = await api('/api/dump/stop', {method:'POST'}) || {};
-    toast(`Дамп сохранен: <span class="mono">${esc(r.path || '')}</span><br>${fmtBytes(r.size)}`
-      + ' <span class="dim">(кнопка "Дампы" в шапке открывает папку)</span>'
-      + (r.sidecar ? `<br><span class="dim">карта соединений: ${esc(r.sidecar)}</span>` : ''));
+    toast(t('Dump saved: {p}', {p: `<span class="mono">${esc(r.path || '')}</span>`}) + `<br>${fmtBytes(r.size)}`
+      + ` <span class="dim">${t('(the "Dumps" button in the header opens the folder)')}</span>`
+      + (r.sidecar ? `<br><span class="dim">${t('connection map: {p}', {p: esc(r.sidecar)})}</span>` : ''));
     if ($('#dumps').style.display !== 'none') renderDumps();
   } else {
     const r = await api('/api/dump/start', {method:'POST',
       headers:{'Content-Type':'application/json'},
       body: JSON.stringify({filtered: $('#onlyproc').checked && !!state.selected})})
-      || {ok:false, error:'нет связи с SocketTrail'};
-    toast(r.ok ? `Запись идет в <span class="mono">${esc(r.path)}</span>`
-        + (r.only ? `<br><span class="dim">только ${esc(r.only)} и его дочерние процессы, запись остановится сама после выхода</span>` : '')
-      : 'Не удалось начать запись: ' + esc(r.error || ''), r.ok ? '' : 'bad');
+      || {ok:false, error:t('no connection to SocketTrail')};
+    toast(r.ok ? t('Recording to {p}', {p: `<span class="mono">${esc(r.path)}</span>`})
+        + (r.only ? `<br><span class="dim">${t('only {w} and its child processes, recording stops by itself after it exits', {w: esc(r.only)})}</span>` : '')
+      : t('Could not start recording: {e}', {e: esc(r.error || '')}), r.ok ? '' : 'bad');
   }
   refresh();
 };
 
 $('#btn-copy').onclick = () => {
-  const head = state.view === 'agg'
-    ? ['время','активных','домен','адрес','порт','протокол','сеть','сессий','исх','вх']
-    : ['время','состояние','домен','адрес','порт','протокол','сеть','процесс','pid','исх','вх'];
+  const head = LANG === 'ru'
+    ? (state.view === 'agg'
+      ? ['время','активных','домен','адрес','порт','протокол','сеть','сессий','исх','вх']
+      : ['время','состояние','домен','адрес','порт','протокол','сеть','процесс','pid','исх','вх'])
+    : (state.view === 'agg'
+      ? ['time','active','domain','address','port','protocol','network','sessions','out','in']
+      : ['time','state','domain','address','port','protocol','network','process','pid','out','in']);
   const lines = [head.join('\t')];
   for (const it of state.lastRows){
     lines.push(state.view === 'agg'
@@ -842,7 +944,7 @@ $('#btn-copy').onclick = () => {
       : [fmtTime(it.first_seen), it.state, it.domain || '', it.remote, it.rport, it.proto,
          `${it.asn || ''} ${it.owner || ''}`.trim(), it.pname || '', it.pid ?? '', it.tx_bytes, it.rx_bytes].join('\t'));
   }
-  copy(lines.join('\n'), plural(state.lastRows.length, 'строка', 'строки', 'строк'));
+  copy(lines.join('\n'), plural(state.lastRows.length, ['row', 'rows'], ['строка', 'строки', 'строк']));
 };
 
 // Каталог дампов лежит в домашней папке и называется так же, как репозиторий
@@ -859,19 +961,19 @@ async function renderDumps(){
   const r = await api('/api/dumps');
   if (!r) return;
   const rows = r.files.map(f => `<tr><td class="f">${esc(f.name)}</td><td>${fmtBytes(f.size)}</td>`
-    + `<td>${new Date(f.mtime).toLocaleString('ru-RU')}</td></tr>`).join('');
-  box.innerHTML = `<div class="path">Дампы сохраняются в <code>${esc(r.dir)}</code>`
-    + `<button id="btn-reveal">${ic('folder')}Открыть папку</button>`
-    + `<button id="btn-copydir">${ic('copy')}Скопировать путь</button>`
+    + `<td>${new Date(f.mtime).toLocaleString(loc())}</td></tr>`).join('');
+  box.innerHTML = `<div class="path">${t('Dumps are saved to {d}', {d: `<code>${esc(r.dir)}</code>`})}`
+    + `<button id="btn-reveal">${ic('folder')}${t('Open folder')}</button>`
+    + `<button id="btn-copydir">${ic('copy')}${t('Copy path')}</button>`
     + `<span class="spacer"></span>`
-    + `<button id="btn-hide" class="ghost icon" title="Скрыть" aria-label="Скрыть">${ic('x')}</button></div>`
+    + `<button id="btn-hide" class="ghost icon" title="${t('Hide')}" aria-label="${t('Hide')}">${ic('x')}</button></div>`
     + (rows ? `<table>${rows}</table>`
-            : '<div class="dim">Пока ни одного дампа не собрано.</div>');
+            : `<div class="dim">${t('No dumps recorded yet.')}</div>`);
   box.style.display = '';
   $('#btn-folder').classList.add('on');
   $('#btn-reveal').onclick = async () => {
     const res = await api('/api/reveal', {method:'POST'});
-    if (res && !res.ok) toast('Не удалось открыть папку, путь: ' + esc(res.dir), 'bad');
+    if (res && !res.ok) toast(t('Could not open the folder, path: {d}', {d: esc(res.dir)}), 'bad');
   };
   $('#btn-copydir').onclick = () => copy(r.dir, r.dir);
   $('#btn-hide').onclick = hideDumps;
@@ -881,10 +983,27 @@ $('#btn-export').onclick = () => location.href = '/api/export?scope=' + state.sc
 $('#btn-html').onclick = () => location.href = '/api/export?format=html&scope=' + state.scope;
 $('#btn-clear').onclick = async () => { await api('/api/clear', {method:'POST'}); hardRefresh(); };
 
+document.querySelectorAll('#lang button').forEach(b => b.onclick = async () => {
+  if (b.dataset.l === LANG) return;
+  const r = await api('/api/lang', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({lang: b.dataset.l})});
+  if (!r || !r.ok) return;
+  LANG = r.lang;
+  applyLang();
+  // кеши разметки сравнивают готовый HTML: после смены языка их надо сбросить
+  $('#btn-dump')._html = ''; $('#warn')._html = '';
+  renderDumpBtn(state.dump);
+  renderProcs();
+  if ($('#dumps').style.display !== 'none') renderDumps();
+  hardRefresh();
+});
+
 renderDumpBtn(null);
 loadWidths();
 initResizers();
 initAsideGrip();
+collectStatics();
+applyLang();
 loadProcs();
 refresh();
 // Открытый канал - признак живого окна: по его закрытию сервер завершается.

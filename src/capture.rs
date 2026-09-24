@@ -11,6 +11,7 @@ use tokio::io::AsyncReadExt;
 use tokio::process::{Child, Command};
 use tokio::sync::mpsc::UnboundedSender;
 
+use crate::i18n::Text;
 use crate::pcap::{Packet, PcapngReader};
 
 /// Путь к dumpcap. На Windows его нет в PATH: берем каталог установки Wireshark.
@@ -39,36 +40,65 @@ pub fn dumpcap() -> &'static std::path::Path {
 }
 
 #[cfg(not(windows))]
-const INSTALL_HINT: &str = "dumpcap не найден. Установите пакет wireshark-common.";
+fn install_hint() -> Text {
+    text!(
+        "dumpcap not found. Install the wireshark-common package.",
+        "dumpcap не найден. Установите пакет wireshark-common."
+    )
+}
 #[cfg(windows)]
-const INSTALL_HINT: &str = "dumpcap не найден. Установите Wireshark (https://www.wireshark.org) \
-     вместе с Npcap - галочка предлагается в установщике.";
+fn install_hint() -> Text {
+    text!(
+        "dumpcap not found. Install Wireshark (https://www.wireshark.org) \
+         together with Npcap - the installer offers it as a checkbox.",
+        "dumpcap не найден. Установите Wireshark (https://www.wireshark.org) \
+         вместе с Npcap - галочка предлагается в установщике."
+    )
+}
 
 #[cfg(not(windows))]
-const RIGHTS_HINT: &str = "Права на захват выдаются так:\n  \
-     sudo dpkg-reconfigure wireshark-common   (ответить \"да\")\n  \
-     sudo usermod -aG wireshark \"$USER\"       (затем перелогиниться)";
+fn rights_hint() -> Text {
+    text!(
+        "Capture rights are granted like this:\n  \
+         sudo dpkg-reconfigure wireshark-common   (answer \"yes\")\n  \
+         sudo usermod -aG wireshark \"$USER\"       (then log in again)",
+        "Права на захват выдаются так:\n  \
+         sudo dpkg-reconfigure wireshark-common   (ответить \"да\")\n  \
+         sudo usermod -aG wireshark \"$USER\"       (затем перелогиниться)"
+    )
+}
 #[cfg(windows)]
-const RIGHTS_HINT: &str = "Npcap не видит сетевых адаптеров. Если при установке Npcap была \
-     включена опция \"Restrict Npcap driver's access to Administrators only\", запустите \
-     SocketTrail от имени администратора или переустановите Npcap без этой опции.";
+fn rights_hint() -> Text {
+    text!(
+        "Npcap sees no network adapters. If Npcap was installed with \
+         \"Restrict Npcap driver's access to Administrators only\", run \
+         SocketTrail as administrator or reinstall Npcap without this option.",
+        "Npcap не видит сетевых адаптеров. Если при установке Npcap была \
+         включена опция \"Restrict Npcap driver's access to Administrators only\", запустите \
+         SocketTrail от имени администратора или переустановите Npcap без этой опции."
+    )
+}
 
 /// Проверка готовности захвата. `dumpcap -D` требует тех же прав, что и сам
 /// захват, поэтому отказ виден сразу, а не пустым окном через минуту.
-pub fn probe() -> Result<(), String> {
+pub fn probe() -> Result<(), Text> {
     let out = std::process::Command::new(dumpcap()).arg("-D").output();
     match out {
-        Err(_) => Err(INSTALL_HINT.into()),
+        Err(_) => Err(install_hint()),
         Ok(o) if o.status.success() => {
             if cfg!(windows) && list_ifaces(&String::from_utf8_lossy(&o.stdout)).is_empty() {
-                return Err(RIGHTS_HINT.into());
+                return Err(rights_hint());
             }
             Ok(())
         }
         Ok(o) => {
             let err = String::from_utf8_lossy(&o.stderr);
-            let first = err.lines().next().unwrap_or("неизвестная ошибка").trim();
-            Err(format!("{first}\n{RIGHTS_HINT}"))
+            let first = err.lines().next().unwrap_or("unknown error").trim();
+            let r = rights_hint();
+            Err(Text {
+                en: format!("{first}\n{}", r.en),
+                ru: format!("{first}\n{}", r.ru),
+            })
         }
     }
 }
@@ -175,15 +205,18 @@ impl Live {
 
     pub fn describe(&self, iface: &str) -> String {
         match self {
-            Live::Dumpcap(_) => format!("dumpcap, интерфейс {iface}"),
+            Live::Dumpcap(_) => t!("dumpcap, interface {iface}", "dumpcap, интерфейс {iface}"),
             #[cfg(windows)]
-            Live::Etw(_) => "PktMon (ETW), все сетевые адаптеры".into(),
+            Live::Etw(_) => t!(
+                "PktMon (ETW), all network adapters",
+                "PktMon (ETW), все сетевые адаптеры"
+            ),
         }
     }
 }
 
 /// Запуск живого разбора. Err - подсказка для интерфейса, почему захвата нет.
-pub fn start_live(iface: &str, tx: UnboundedSender<Packet>) -> Result<Live, String> {
+pub fn start_live(iface: &str, tx: UnboundedSender<Packet>) -> Result<Live, Text> {
     #[cfg(windows)]
     let own_err = match crate::etw::start(tx.clone()) {
         Ok(s) => return Ok(Live::Etw(s)),
@@ -192,7 +225,7 @@ pub fn start_live(iface: &str, tx: UnboundedSender<Packet>) -> Result<Live, Stri
     match probe() {
         Ok(()) => spawn_live(iface, tx)
             .map(|c| Live::Dumpcap(Box::new(c)))
-            .map_err(|e| format!("dumpcap не запустился: {e}")),
+            .map_err(|e| text!("dumpcap did not start: {e}", "dumpcap не запустился: {e}")),
         #[cfg(windows)]
         Err(_) => Err(own_err),
         #[cfg(not(windows))]

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Портативная сборка: target/windows/SocketTrail-<версия>-windows-x64.zip
-# Локально - mingw (x86_64-pc-windows-gnu), в CI на Windows - TARGET=x86_64-pc-windows-msvc.
+# Portable build: target/windows/SocketTrail-<version>-windows-x64.zip
+# Locally with mingw (x86_64-pc-windows-gnu), in CI on Windows with TARGET=x86_64-pc-windows-msvc.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 

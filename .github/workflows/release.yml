@@ -15,10 +15,10 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
-      - name: Тег совпадает с версией в Cargo.toml
+      - name: Tag matches the version in Cargo.toml
         run: |
           v=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
-          [ "v$v" = "$GITHUB_REF_NAME" ] || { echo "тег $GITHUB_REF_NAME, а в Cargo.toml $v"; exit 1; }
+          [ "v$v" = "$GITHUB_REF_NAME" ] || { echo "tag is $GITHUB_REF_NAME, but Cargo.toml has $v"; exit 1; }
 
   build-deb:
     needs: check-version
@@ -40,7 +40,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
-      - name: Сборка zip (msvc, статический CRT)
+      - name: Build zip (msvc, static CRT)
         shell: bash
         env:
           TARGET: x86_64-pc-windows-msvc
@@ -73,7 +73,7 @@ jobs:
           subject-path: |
             dist/*.deb
             dist/*.zip
-      - name: Раздел CHANGELOG для этой версии
+      - name: CHANGELOG section for this version
         run: |
           v=${GITHUB_REF_NAME#v}
           awk -v h="## v$v" 'index($0,h)==1{f=1;next} /^## /{if(f)exit} f' CHANGELOG.md > notes.md

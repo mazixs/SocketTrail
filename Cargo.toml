@@ -2,7 +2,7 @@
 name = "sockettrail"
 version = "0.1.0"
 edition = "2024"
-description = "Монитор сетевых соединений с привязкой к процессу, включая приложения под Proton и Wine"
+description = "Network connection monitor tied to processes, including applications under Proton and Wine"
 license = "MIT"
 repository = "https://github.com/mazixs/SocketTrail"
 readme = "README.md"

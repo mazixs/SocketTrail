@@ -22,6 +22,7 @@ use windows_sys::Win32::System::Diagnostics::Etw::{
     TRACE_LEVEL_INFORMATION, WNODE_FLAG_TRACED_GUID,
 };
 
+use crate::i18n::Text;
 use crate::pcap::{self, Packet};
 
 const SESSION: &str = "SocketTrail";
@@ -52,7 +53,7 @@ fn pktmon(args: &[&str]) -> Result<String, String> {
         .args(args)
         .creation_flags(CREATE_NO_WINDOW)
         .output()
-        .map_err(|e| format!("pktmon не запустился: {e}"))?;
+        .map_err(|e| t!("pktmon did not start: {e}", "pktmon не запустился: {e}"))?;
     let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
     if out.status.success() {
         Ok(text)
@@ -61,12 +62,15 @@ fn pktmon(args: &[&str]) -> Result<String, String> {
     }
 }
 
-pub fn probe() -> Result<(), String> {
+pub fn probe() -> Result<(), Text> {
     if !pktmon_exe().is_file() {
-        return Err("В системе нет PktMon (нужна Windows 10 версии 2004 или новее).".into());
+        return Err(text!(
+            "PktMon is missing (Windows 10 version 2004 or newer is required).",
+            "В системе нет PktMon (нужна Windows 10 версии 2004 или новее)."
+        ));
     }
     if !crate::elevate::is_elevated() {
-        return Err(NEED_ADMIN.into());
+        return Err(need_admin());
     }
     Ok(())
 }
@@ -76,8 +80,14 @@ pub fn can_elevate() -> bool {
     pktmon_exe().is_file() && !crate::elevate::is_elevated()
 }
 
-pub const NEED_ADMIN: &str = "Домены берутся из DNS-кеша Windows, у Chrome и Edge их не будет. \
-Для доменов браузеров, объема трафика и дампов перезапустите SocketTrail от имени администратора.";
+pub fn need_admin() -> Text {
+    text!(
+        "Domains come from the Windows DNS cache, Chrome and Edge will have none. \
+         For browser domains, traffic volume and dumps, restart SocketTrail as administrator.",
+        "Домены берутся из DNS-кеша Windows, у Chrome и Edge их не будет. \
+         Для доменов браузеров, объема трафика и дампов перезапустите SocketTrail от имени администратора."
+    )
+}
 
 struct Dedup {
     order: VecDeque<u64>,
@@ -152,7 +162,7 @@ fn stop_session() {
     };
 }
 
-pub fn start(tx: UnboundedSender<Packet>) -> Result<Session, String> {
+pub fn start(tx: UnboundedSender<Packet>) -> Result<Session, Text> {
     probe()?;
     if SINK
         .set(Sink {
@@ -166,7 +176,7 @@ pub fn start(tx: UnboundedSender<Packet>) -> Result<Session, String> {
         })
         .is_err()
     {
-        return Err("захват уже запущен".into());
+        return Err(t!("capture is already running", "захват уже запущен").into());
     }
 
     // Хвосты прошлого запуска, если он завершился аварийно.
@@ -199,7 +209,11 @@ pub fn start(tx: UnboundedSender<Packet>) -> Result<Session, String> {
     let rc = unsafe { StartTraceW(&mut control, name.as_ptr(), &mut p.p) };
     if rc != 0 {
         let _ = pktmon(&["stop"]);
-        return Err(format!("ETW-сессия не создана, код {rc}"));
+        return Err(t!(
+            "ETW session not created, code {rc}",
+            "ETW-сессия не создана, код {rc}"
+        )
+        .into());
     }
     let rc = unsafe {
         EnableTraceEx2(
@@ -216,7 +230,11 @@ pub fn start(tx: UnboundedSender<Packet>) -> Result<Session, String> {
     if rc != 0 {
         stop_session();
         let _ = pktmon(&["stop"]);
-        return Err(format!("провайдер PktMon не включен, код {rc}"));
+        return Err(t!(
+            "PktMon provider not enabled, code {rc}",
+            "провайдер PktMon не включен, код {rc}"
+        )
+        .into());
     }
 
     let thread = std::thread::spawn(move || {
@@ -228,7 +246,7 @@ pub fn start(tx: UnboundedSender<Packet>) -> Result<Session, String> {
         log.Anonymous2.EventRecordCallback = Some(on_event);
         let h = unsafe { OpenTraceW(&mut log) };
         if h.Value == u64::MAX {
-            eprintln!("[capture] OpenTrace не удался");
+            eprintln!("[capture] OpenTrace failed");
             return;
         }
         unsafe {
@@ -267,7 +285,7 @@ impl Drop for Session {
         if let Some(s) = SINK.get() {
             let bad = s.bad.load(Ordering::Relaxed);
             if bad > 0 {
-                eprintln!("[capture] событий неизвестного формата: {bad}");
+                eprintln!("[capture] events in unknown format: {bad}");
             }
         }
     }
@@ -387,7 +405,7 @@ pub fn running() -> bool {
 pub fn dump_start(path: &str) -> std::io::Result<()> {
     let sink = SINK
         .get()
-        .ok_or_else(|| std::io::Error::other("захват не запущен"))?;
+        .ok_or_else(|| std::io::Error::other(t!("capture is not running", "захват не запущен")))?;
     let mut out = BufWriter::with_capacity(1 << 20, std::fs::File::create(path)?);
     write_header(&mut out)?;
     *sink.dump.lock().unwrap() = Some(DumpWriter { out });

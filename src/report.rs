@@ -1,5 +1,6 @@
 //! Автономный HTML-отчет: открывается без интернета, все стили внутри файла.
 
+use crate::i18n::tr;
 use crate::state::Conn;
 
 fn esc(s: &str) -> String {
@@ -12,11 +13,11 @@ fn bytes(n: u64) -> String {
     if n == 0 {
         "-".into()
     } else if n < 1024 {
-        format!("{n} Б")
+        format!("{n} {}", tr("B", "Б"))
     } else if n < 1_048_576 {
-        format!("{:.1} КБ", n as f64 / 1024.0)
+        format!("{:.1} {}", n as f64 / 1024.0, tr("KB", "КБ"))
     } else {
-        format!("{:.2} МБ", n as f64 / 1_048_576.0)
+        format!("{:.2} {}", n as f64 / 1_048_576.0, tr("MB", "МБ"))
     }
 }
 
@@ -38,11 +39,10 @@ pub fn render(title: &str, generated: &str, conns: &[Conn]) -> String {
                  <td class=mono>{rx}</td></tr>",
                 proto = c.proto,
                 state = esc(&c.state),
-                dom = c
-                    .domain
-                    .as_deref()
-                    .map(esc)
-                    .unwrap_or_else(|| "<span class=dim>имени нет</span>".into()),
+                dom = c.domain.as_deref().map(esc).unwrap_or_else(|| format!(
+                    "<span class=dim>{}</span>",
+                    tr("no name", "имени нет")
+                )),
                 ip = esc(&c.remote),
                 port = c.rport,
                 net = esc(&format!(
@@ -50,11 +50,12 @@ pub fn render(title: &str, generated: &str, conns: &[Conn]) -> String {
                     c.asn.as_deref().unwrap_or(""),
                     c.owner.as_deref().unwrap_or("")
                 )),
-                proc = c
-                    .pname
-                    .as_deref()
-                    .map(esc)
-                    .unwrap_or_else(|| "<span class=dim>только пакеты</span>".into()),
+                proc = c.pname.as_deref().map(esc).unwrap_or_else(|| {
+                    format!(
+                        "<span class=dim>{}</span>",
+                        tr("packets only", "только пакеты")
+                    )
+                }),
                 tx = bytes(c.tx_bytes),
                 rx = bytes(c.rx_bytes),
             )
@@ -64,7 +65,7 @@ pub fn render(title: &str, generated: &str, conns: &[Conn]) -> String {
     let domains: String = uniq_dom.iter().map(|d| format!("{}\n", esc(d))).collect();
 
     format!(
-        r#"<!doctype html><html lang=ru><head><meta charset=utf-8>
+        r#"<!doctype html><html lang={lang}><head><meta charset=utf-8>
 <meta name=viewport content="width=device-width,initial-scale=1"><title>{title}</title><style>
 :root{{--bg:#0f1115;--panel:#161a21;--panel2:#1c2129;--line:#2a313c;--txt:#e6e9ef;--dim:#9aa4b2;--accent:#7aa2f7}}
 @media (prefers-color-scheme:light){{:root{{--bg:#f6f7f9;--panel:#fff;--panel2:#eef1f5;--line:#d8dee8;
@@ -88,19 +89,36 @@ td{{padding:8px 11px;border-top:1px solid var(--line)}}
 pre{{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:12px 14px;
  font-family:ui-monospace,monospace;font-size:12.5px;overflow-x:auto}}
 </style></head><body><div class=wrap>
-<h1>{title}</h1><p class=sub>SocketTrail, снимок от {generated}</p>
+<h1>{title}</h1><p class=sub>{snap} {generated}</p>
 <div class=cards>
-<div class=card><div class=n>{nconn}</div><div class=l>соединений</div></div>
-<div class=card><div class=n>{nip}</div><div class=l>уникальных адресов</div></div>
-<div class=card><div class=n>{ndom}</div><div class=l>доменов опознано</div></div>
-<div class=card><div class=n>{tx}</div><div class=l>исходящий трафик</div></div>
-<div class=card><div class=n>{rx}</div><div class=l>входящий трафик</div></div>
+<div class=card><div class=n>{nconn}</div><div class=l>{l_conn}</div></div>
+<div class=card><div class=n>{nip}</div><div class=l>{l_ip}</div></div>
+<div class=card><div class=n>{ndom}</div><div class=l>{l_dom}</div></div>
+<div class=card><div class=n>{tx}</div><div class=l>{l_tx}</div></div>
+<div class=card><div class=n>{rx}</div><div class=l>{l_rx}</div></div>
 </div>
-<h2>Соединения</h2>
-<table><thead><tr><th>Proto<th>Состояние<th>Домен<th>Адрес<th>Порт<th>Сеть<th>Процесс<th>Исх.<th>Вх.</tr></thead>
+<h2>{h_conns}</h2>
+<table><thead><tr><th>Proto<th>{c_state}<th>{c_dom}<th>{c_addr}<th>{c_port}<th>{c_net}<th>{c_proc}<th>{c_out}<th>{c_in}</tr></thead>
 <tbody>{rows}</tbody></table>
-<h2>Список доменов</h2><pre>{domains}</pre>
+<h2>{h_doms}</h2><pre>{domains}</pre>
 </div></body></html>"#,
+        lang = crate::i18n::code(),
+        snap = tr("SocketTrail, snapshot of", "SocketTrail, снимок от"),
+        l_conn = tr("connections", "соединений"),
+        l_ip = tr("unique addresses", "уникальных адресов"),
+        l_dom = tr("domains identified", "доменов опознано"),
+        l_tx = tr("outgoing traffic", "исходящий трафик"),
+        l_rx = tr("incoming traffic", "входящий трафик"),
+        h_conns = tr("Connections", "Соединения"),
+        c_state = tr("State", "Состояние"),
+        c_dom = tr("Domain", "Домен"),
+        c_addr = tr("Address", "Адрес"),
+        c_port = tr("Port", "Порт"),
+        c_net = tr("Network", "Сеть"),
+        c_proc = tr("Process", "Процесс"),
+        c_out = tr("Out", "Исх."),
+        c_in = tr("In", "Вх."),
+        h_doms = tr("Domain list", "Список доменов"),
         nconn = conns.len(),
         nip = uniq_ips.len(),
         ndom = uniq_dom.len(),

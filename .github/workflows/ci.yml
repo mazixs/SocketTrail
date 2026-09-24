@@ -42,7 +42,7 @@ jobs:
       - run: cargo build --release
       - run: packaging/smoke.sh target/release/sockettrail
 
-  # Быстрая проверка Windows-кода без Windows: mingw-сборка и тесты под Wine.
+  # Quick check of the Windows code without Windows: mingw build and tests under Wine.
   test-wine:
     runs-on: ubuntu-24.04
     env:
@@ -52,8 +52,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-pc-windows-gnu
-      # Wine 9 из Ubuntu не отдает PID владельца в таблице сокетов, нужен WineHQ 10+.
-      - name: mingw-w64 и WineHQ stable
+      # Ubuntu's Wine 9 does not report the owner PID in the socket table, WineHQ 10+ is needed.
+      - name: mingw-w64 and WineHQ stable
         run: |
           sudo dpkg --add-architecture i386
           sudo mkdir -pm755 /etc/apt/keyrings

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Smoke: сервер поднимается и API отвечает. Аргументы - команда запуска, например
-# packaging/smoke.sh target/release/sockettrail или packaging/smoke.sh wine sockettrail.exe
+# Smoke: the server starts and the API responds. Arguments are the launch command, e.g.
+# packaging/smoke.sh target/release/sockettrail or packaging/smoke.sh wine sockettrail.exe
 set -euo pipefail
 PORT=${PORT:-8799}
 URL=http://127.0.0.1:$PORT
@@ -11,7 +11,7 @@ trap 'kill $PID 2>/dev/null || true' EXIT
 
 for _ in $(seq 1 60); do
   curl -sf "$URL/api/ping" >/dev/null && break
-  kill -0 $PID 2>/dev/null || { echo "процесс завершился до старта сервера"; exit 1; }
+  kill -0 $PID 2>/dev/null || { echo "process exited before the server started"; exit 1; }
   sleep 1
 done
 curl -sf "$URL/api/ping" | grep '"sockettrail"' >/dev/null

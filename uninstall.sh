@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Удаление того, что поставил install.sh. Собранные дампы в ~/SocketTrail не трогаются.
+# Removes what install.sh installed. Recorded dumps in ~/SocketTrail are left alone.
 set -euo pipefail
 
-# XDG_DATA_HOME внутри snap-песочницы (терминал VS Code, например) указывает в
-# каталог самого snap, откуда ярлык в меню приложений не попадет. В таком случае
-# берем штатный ~/.local/share.
+# Inside a snap sandbox (e.g. the VS Code terminal) XDG_DATA_HOME points into the
+# snap's own directory, where the shortcut never reaches the application menu.
+# Fall back to the standard ~/.local/share then.
 DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
 case "$DATA_HOME" in
   */snap/*) DATA_HOME="$HOME/.local/share" ;;
@@ -19,4 +19,4 @@ ICON_DIR="$DATA_HOME/icons/hicolor/scalable/apps"
 
 rm -fv "$BIN_DIR/sockettrail" "$APP_DIR/sockettrail.desktop" "$APP_DIR"/sockettrail-*.desktop "$ICON_DIR/sockettrail.svg"
 command -v update-desktop-database >/dev/null && update-desktop-database "$APP_DIR" 2>/dev/null || true
-echo "Удалено. Дампы в ~/SocketTrail остались на месте."
+echo "Removed. Dumps in ~/SocketTrail were kept."

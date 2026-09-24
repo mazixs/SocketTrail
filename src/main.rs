@@ -1,5 +1,9 @@
 //! SocketTrail - привязанный к процессу монитор сетевых соединений.
 
+// первым: макросы t! и text! нужны остальным модулям
+#[macro_use]
+mod i18n;
+
 mod alive;
 mod annotate;
 mod cache;
@@ -65,7 +69,7 @@ struct App {
     auto_stopped: Option<String>,
     capture_on: bool,
     /// причина, по которой захват недоступен - показывается в интерфейсе
-    capture_hint: Option<String>,
+    capture_hint: Option<i18n::Text>,
     iface: String,
     whois: HashMap<IpAddr, resolve::Whois>,
     /// корни собственного дерева: сам SocketTrail и поднятый им dumpcap
@@ -82,7 +86,30 @@ struct App {
 
 type Shared = Arc<Mutex<App>>;
 
-const HELP: &str = "\
+const HELP_EN: &str = "\
+SocketTrail - network connection monitor tied to processes.
+
+Usage: sockettrail [options]
+
+  -i, --iface <name>  dumpcap interface, several separated by commas (default any:
+                      all at once on Linux, all Npcap adapters except loopback on Windows).
+                      Capture through PktMon (Windows, as administrator) uses all adapters
+      --port <port>   port of the local UI (default 8787)
+      --no-open       do not open the window, only start the server (background collection)
+      --lang <en|ru>  language of the window and messages for this run
+                      (the choice made in the window is remembered)
+  -h, --help          this help
+
+The server listens on 127.0.0.1 only. If the port is taken by a running SocketTrail,
+a second launch just opens its window; if another program holds the port,
+the next free one is used.
+
+The window is Chrome, Chromium, Edge or Brave in app mode with its own profile.
+Closing the window exits the program, an ongoing dump is finished and closed.
+Without a Chromium browser a regular tab opens, and the program runs until Ctrl+C.
+";
+
+const HELP_RU: &str = "\
 SocketTrail - монитор сетевых соединений с привязкой к процессу.
 
 Использование: sockettrail [ключи]
@@ -92,6 +119,8 @@ SocketTrail - монитор сетевых соединений с привяз
                       Захват через PktMon (Windows, от администратора) идет со всех адаптеров
       --port <порт>   порт локального интерфейса (по умолчанию 8787)
       --no-open       не открывать окно, только поднять сервер (фоновый сбор)
+      --lang <en|ru>  язык окна и сообщений на этот запуск
+                      (выбор, сделанный в окне, запоминается)
   -h, --help          эта справка
 
 Сервер слушает только 127.0.0.1. Если порт занят уже запущенным SocketTrail,
@@ -115,6 +144,15 @@ struct Args {
 
 fn parse_args() -> Args {
     let argv: Vec<String> = std::env::args().skip(1).collect();
+    // язык нужен раньше остальных ключей: от него зависит текст справки
+    i18n::load();
+    if let Some(v) = argv
+        .iter()
+        .position(|x| x == "--lang")
+        .and_then(|i| argv.get(i + 1))
+    {
+        i18n::set(v);
+    }
     let mut a = Args {
         iface: "any".into(),
         port: 8787,
@@ -126,7 +164,7 @@ fn parse_args() -> Args {
     while i < argv.len() {
         match argv[i].as_str() {
             "-h" | "--help" => {
-                print!("{HELP}");
+                print!("{}", i18n::tr(HELP_EN, HELP_RU));
                 std::process::exit(0);
             }
             "-i" | "--iface" => {
@@ -147,7 +185,14 @@ fn parse_args() -> Args {
                 i += 1;
             }
             "--adopt" => a.adopt = true,
-            other => eprintln!("[аргументы] неизвестный ключ {other}, пропущен"),
+            "--lang" => i += 1,
+            other => eprintln!(
+                "{}",
+                t!(
+                    "[args] unknown option {other}, ignored",
+                    "[аргументы] неизвестный ключ {other}, пропущен"
+                )
+            ),
         }
         i += 1;
     }
@@ -180,23 +225,39 @@ async fn bind_port(pref: u16, open: bool) -> (tokio::net::TcpListener, u16) {
             Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
                 if is_ours(port).await {
                     let url = format!("http://127.0.0.1:{port}/");
-                    eprintln!("SocketTrail уже запущен: {url}");
+                    eprintln!(
+                        "{}",
+                        t!(
+                            "SocketTrail is already running: {url}",
+                            "SocketTrail уже запущен: {url}"
+                        )
+                    );
                     if open {
                         window::open(&url);
                     }
                     std::process::exit(0);
                 }
-                eprintln!("[порт] {port} занят другой программой, пробую следующий");
+                eprintln!(
+                    "{}",
+                    t!(
+                        "[port] {port} is used by another program, trying the next one",
+                        "[порт] {port} занят другой программой, пробую следующий"
+                    )
+                );
             }
             Err(e) => {
-                eprintln!("[порт] {port}: {e}");
+                eprintln!("[port] {port}: {e}");
                 std::process::exit(1);
             }
         }
     }
+    let last = pref + 20;
     eprintln!(
-        "[порт] свободный порт не найден в диапазоне {pref}..{}",
-        pref + 20
+        "{}",
+        t!(
+            "[port] no free port in range {pref}..{last}",
+            "[порт] свободный порт не найден в диапазоне {pref}..{last}"
+        )
     );
     std::process::exit(1);
 }
@@ -261,7 +322,13 @@ async fn main() {
             }
         }
         if restored > 0 {
-            eprintln!("[cache] имен из кеша: {restored}");
+            eprintln!(
+                "{}",
+                t!(
+                    "[cache] names from cache: {restored}",
+                    "[cache] имен из кеша: {restored}"
+                )
+            );
         }
     }
 
@@ -284,11 +351,25 @@ async fn main() {
                     }
                 }
             });
-            eprintln!("[capture] живой разбор пакетов: {}", live.describe(&iface));
+            let how = live.describe(&iface);
+            eprintln!(
+                "{}",
+                t!(
+                    "[capture] live packet parsing: {how}",
+                    "[capture] живой разбор пакетов: {how}"
+                )
+            );
             Some(live)
         }
         Err(hint) => {
-            eprintln!("[capture] пакетный разбор выключен, остается опрос сокетов.\n{hint}");
+            let h = hint.get();
+            eprintln!(
+                "{}",
+                t!(
+                    "[capture] packet parsing is off, only socket polling remains.\n{h}",
+                    "[capture] пакетный разбор выключен, остается опрос сокетов.\n{h}"
+                )
+            );
             let mut g = app.lock().unwrap();
             g.capture_hint = Some(hint);
             #[cfg(windows)]
@@ -324,6 +405,7 @@ async fn main() {
         .route("/api/reveal", post(api_reveal))
         .route("/api/export", get(api_export))
         .route("/api/elevate", post(api_elevate))
+        .route("/api/lang", post(api_lang))
         .layer(axum::middleware::from_fn(move |req, next| {
             guard(port, req, next)
         }))
@@ -341,7 +423,7 @@ async fn main() {
             tokio::time::sleep(Duration::from_secs(15)).await;
             if a.seen() {
                 alive::wait_closed(a, 10).await;
-                let _ = tx.send("окно закрыто (страница отключилась)");
+                let _ = tx.send(closed_page());
             } else {
                 spawn_window(url, tx, a);
             }
@@ -353,8 +435,8 @@ async fn main() {
         .with_graceful_shutdown({
             let alive = alive.clone();
             async move {
-                let why = quit_rx.recv().await.unwrap_or("канал закрыт");
-                eprintln!("[выход] {why}");
+                let why = quit_rx.recv().await.unwrap_or("channel closed");
+                eprintln!("{} {why}", i18n::tr("[exit]", "[выход]"));
                 // открытые SSE-каналы иначе держали бы сервер бесконечно
                 alive.close();
             }
@@ -364,6 +446,13 @@ async fn main() {
 
     shutdown(&app).await;
     drop(live_capture);
+}
+
+fn closed_page() -> &'static str {
+    i18n::tr(
+        "window closed (page disconnected)",
+        "окно закрыто (страница отключилась)",
+    )
 }
 
 /// Окно в отдельном потоке: ожидание браузера блокирующее. Окно считается
@@ -380,16 +469,28 @@ fn spawn_window(
             let t = tx.clone();
             rt.spawn(async move {
                 alive::wait_closed(alive, 10).await;
-                let _ = t.send("окно закрыто (страница отключилась)");
+                let _ = t.send(closed_page());
             });
             w.wait();
-            let _ = tx.send("окно закрыто");
+            let _ = tx.send(i18n::tr("window closed", "окно закрыто"));
         }
         window::Opened::Detached => {
-            eprintln!("[окно] открыто без отслеживания - завершение по Ctrl+C");
+            eprintln!(
+                "{}",
+                t!(
+                    "[window] opened without tracking - exit with Ctrl+C",
+                    "[окно] открыто без отслеживания - завершение по Ctrl+C"
+                )
+            );
         }
         window::Opened::Failed => {
-            eprintln!("[окно] браузер не найден, откройте {url} вручную");
+            eprintln!(
+                "{}",
+                t!(
+                    "[window] no browser found, open {url} manually",
+                    "[окно] браузер не найден, откройте {url} вручную"
+                )
+            );
         }
     });
 }
@@ -404,7 +505,8 @@ async fn api_elevate(State(app): State<Shared>) -> impl IntoResponse {
             (g.port, g.iface.clone(), g.quit.clone())
         };
         let mut args = format!(
-            "--port {port} --no-open --adopt --wait-pid {}",
+            "--port {port} --no-open --adopt --lang {} --wait-pid {}",
+            i18n::code(),
             std::process::id()
         );
         if iface != "any" {
@@ -415,7 +517,10 @@ async fn api_elevate(State(app): State<Shared>) -> impl IntoResponse {
             .unwrap_or_else(|e| Err(e.to_string()));
         match r {
             Ok(()) => {
-                let _ = quit.send("перезапуск от имени администратора");
+                let _ = quit.send(i18n::tr(
+                    "restarting as administrator",
+                    "перезапуск от имени администратора",
+                ));
                 Json(json!({ "ok": true }))
             }
             Err(e) => Json(json!({ "ok": false, "error": e })),
@@ -424,7 +529,7 @@ async fn api_elevate(State(app): State<Shared>) -> impl IntoResponse {
     #[cfg(not(windows))]
     {
         let _ = app;
-        Json(json!({ "ok": false, "error": "только для Windows" }))
+        Json(json!({ "ok": false, "error": t!("Windows only", "только для Windows") }))
     }
 }
 
@@ -468,9 +573,9 @@ fn spawn_signal_watch(tx: tokio::sync::mpsc::UnboundedSender<&'static str>) {
             return;
         };
         let why = tokio::select! {
-            _ = a.recv() => "закрытие консоли",
-            _ = b.recv() => "выключение",
-            _ = c.recv() => "выход из системы",
+            _ = a.recv() => i18n::tr("console closed", "закрытие консоли"),
+            _ = b.recv() => i18n::tr("shutdown", "выключение"),
+            _ = c.recv() => i18n::tr("logoff", "выход из системы"),
             _ = d.recv() => "Ctrl+Break",
         };
         let _ = tx.send(why);
@@ -484,7 +589,10 @@ async fn shutdown(app: &Shared) {
     if running {
         let (path, _, _) = finish_dump(app).await;
         if let Some(p) = path {
-            eprintln!("[выход] дамп закрыт: {p}");
+            eprintln!(
+                "{}",
+                t!("[exit] dump closed: {p}", "[выход] дамп закрыт: {p}")
+            );
         }
     }
     let disk = cache_snapshot(&app.lock().unwrap());
@@ -743,8 +851,22 @@ fn is_private(ip: &IpAddr) -> bool {
     }
 }
 
+/// Язык подставляется в разметку сразу, чтобы окно не мигало английским перед русским.
 async fn index() -> impl IntoResponse {
-    Html(include_str!("../ui/index.html"))
+    Html(include_str!("../ui/index.html").replacen("__LANG__", i18n::code(), 1))
+}
+
+#[derive(Deserialize)]
+struct LangBody {
+    lang: String,
+}
+
+async fn api_lang(Json(b): Json<LangBody>) -> impl IntoResponse {
+    let ok = i18n::set(&b.lang);
+    if ok {
+        i18n::save();
+    }
+    Json(json!({ "ok": ok, "lang": i18n::code() }))
 }
 
 /// Метка своего экземпляра: по ней повторный запуск понимает, что окно уже есть.
@@ -1055,7 +1177,7 @@ async fn api_state(State(app): State<Shared>, Query(q): Query<StateQuery>) -> im
             "attributed": attributed,
             "packets": g.store.packets_seen,
             "capture": g.capture_on,
-            "capture_hint": g.capture_hint,
+            "capture_hint": g.capture_hint.as_ref().map(|t| t.get()),
             "elevate": g.can_elevate,
             "iface": g.iface,
         },
@@ -1168,7 +1290,13 @@ async fn finish_dump(app: &Shared) -> (Option<String>, u64, Option<String>) {
                 info["packets"] =
                     json!({"total": st.packets, "kept": st.kept, "labeled": st.labeled});
             }
-            Err(e) => eprintln!("[дамп] подписи не добавлены: {e}"),
+            Err(e) => eprintln!(
+                "{}",
+                t!(
+                    "[dump] labels not added: {e}",
+                    "[дамп] подписи не добавлены: {e}"
+                )
+            ),
         }
         let jp = p.trim_end_matches(".pcapng").to_string() + ".json";
         if std::fs::write(&jp, serde_json::to_string_pretty(&info).unwrap_or_default()).is_ok() {
@@ -1226,9 +1354,18 @@ fn dump_plan(g: &App, m: &DumpMeta, path: &str) -> (annotate::Plan, serde_json::
         .as_ref()
         .map(|p| format!("{} [{}]", p.name, p.pid));
     let comment = match (&who, m.only_group) {
-        (Some(w), true) => format!("SocketTrail: только трафик {w} и его дочерних процессов"),
-        (Some(w), false) => format!("SocketTrail: весь трафик компьютера, выбран {w}"),
-        (None, _) => "SocketTrail: весь трафик компьютера".to_string(),
+        (Some(w), true) => t!(
+            "SocketTrail: only traffic of {w} and its child processes",
+            "SocketTrail: только трафик {w} и его дочерних процессов"
+        ),
+        (Some(w), false) => t!(
+            "SocketTrail: all traffic of the computer, selected {w}",
+            "SocketTrail: весь трафик компьютера, выбран {w}"
+        ),
+        (None, _) => t!(
+            "SocketTrail: all traffic of the computer",
+            "SocketTrail: весь трафик компьютера"
+        ),
     };
     let mut pids: Vec<i32> = m.pids.iter().copied().collect();
     pids.sort_unstable();
@@ -1286,7 +1423,13 @@ async fn auto_stop_dump(app: &Shared) {
     }
     let (path, _, _) = finish_dump(app).await;
     if let Some(p) = path {
-        eprintln!("[дамп] процесс завершился, запись остановлена: {p}");
+        eprintln!(
+            "{}",
+            t!(
+                "[dump] process exited, recording stopped: {p}",
+                "[дамп] процесс завершился, запись остановлена: {p}"
+            )
+        );
         app.lock().unwrap().auto_stopped = Some(p);
     }
 }
@@ -1359,11 +1502,18 @@ async fn api_export(State(app): State<Shared>, Query(q): Query<ExportQuery>) -> 
         .selected
         .and_then(|pid| g.procs.iter().find(|p| p.pid == pid))
         .map(|p| format!("{} (pid {})", p.name, p.pid))
-        .unwrap_or_else(|| "весь хост".into());
+        .unwrap_or_else(|| t!("whole host", "весь хост"));
     let now = human_time(state::now_ms());
 
     if q.format == "html" {
-        let html = report::render(&format!("Сетевые соединения: {pname}"), &now, &conns);
+        let html = report::render(
+            &t!(
+                "Network connections: {pname}",
+                "Сетевые соединения: {pname}"
+            ),
+            &now,
+            &conns,
+        );
         return (
             StatusCode::OK,
             [

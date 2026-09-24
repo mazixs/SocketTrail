@@ -59,14 +59,21 @@ pub fn classify(ip: &IpAddr) -> &'static str {
 }
 
 /// Понятная подпись вместо пустого места там, где доменного имени не существует.
-pub fn well_known_label(ip: &IpAddr, port: u16) -> Option<&'static str> {
+/// Пара (en, ru): при смене языка подпись заменяется в уже известных соединениях.
+pub fn well_known_label(ip: &IpAddr, port: u16) -> Option<(&'static str, &'static str)> {
     match (ip.to_string().as_str(), port) {
-        ("127.0.0.53", 53) => Some("systemd-resolved, локальный DNS"),
-        ("127.0.0.54", _) => Some("systemd-resolved, делегирование"),
-        ("127.0.0.1", _) | ("::1", _) => Some("localhost"),
-        ("224.0.0.251", _) => Some("mDNS, многоадресная рассылка"),
-        ("239.255.255.250", _) => Some("SSDP, обнаружение устройств"),
-        ("255.255.255.255", _) => Some("широковещательная рассылка"),
+        ("127.0.0.53", 53) => Some((
+            "systemd-resolved, local DNS",
+            "systemd-resolved, локальный DNS",
+        )),
+        ("127.0.0.54", _) => Some((
+            "systemd-resolved, delegation",
+            "systemd-resolved, делегирование",
+        )),
+        ("127.0.0.1", _) | ("::1", _) => Some(("localhost", "localhost")),
+        ("224.0.0.251", _) => Some(("mDNS, multicast", "mDNS, многоадресная рассылка")),
+        ("239.255.255.250", _) => Some(("SSDP, device discovery", "SSDP, обнаружение устройств")),
+        ("255.255.255.255", _) => Some(("broadcast", "широковещательная рассылка")),
         _ => None,
     }
 }
@@ -313,6 +320,13 @@ impl Store {
                 }
                 continue;
             }
+            let known = ip.and_then(|ip| well_known_label(&ip, c.rport));
+            if let Some((en, ru)) = known
+                && c.domain.as_deref().is_some_and(|d| d == en || d == ru)
+            {
+                c.domain = Some(crate::i18n::tr(en, ru).to_string());
+                continue;
+            }
             if c.domain.is_some() {
                 continue;
             }
@@ -320,8 +334,8 @@ impl Store {
                 c.domain = Some(ptr.clone());
                 continue;
             }
-            if let Some(label) = ip.and_then(|ip| well_known_label(&ip, c.rport)) {
-                c.domain = Some(label.to_string());
+            if let Some((en, ru)) = known {
+                c.domain = Some(crate::i18n::tr(en, ru).to_string());
             }
         }
     }

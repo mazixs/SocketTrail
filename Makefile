@@ -1,26 +1,26 @@
 .PHONY: run build install uninstall deb win check clean
 
-run: ## собрать при необходимости и запустить
+run: ## build if needed and run
 	@./run.sh
 
-build: ## только сборка
+build: ## build only
 	cargo build --release
 
-install: ## поставить в ~/.local/bin и добавить ярлык в меню
+install: ## install into ~/.local/bin and add a menu shortcut
 	@./install.sh
 
-uninstall: ## убрать бинарь и ярлык
+uninstall: ## remove the binary and the shortcut
 	@./uninstall.sh
 
-deb: ## собрать пакет target/debian/sockettrail_<версия>_amd64.deb
+deb: ## build target/debian/sockettrail_<version>_amd64.deb
 	@packaging/build-deb.sh
 
-win: ## портативный zip для Windows: target/windows/SocketTrail-<версия>-windows-x64.zip
+win: ## portable Windows zip: target/windows/SocketTrail-<version>-windows-x64.zip
 	@packaging/build-win.sh
 
-check: ## проверить права на захват
-	@dumpcap -D >/dev/null 2>&1 && echo "захват доступен без root" || \
-	  echo "прав на захват нет: sudo dpkg-reconfigure wireshark-common && sudo usermod -aG wireshark $$USER"
+check: ## check packet capture rights
+	@dumpcap -D >/dev/null 2>&1 && echo "packet capture works without root" || \
+	  echo "no capture rights: sudo dpkg-reconfigure wireshark-common && sudo usermod -aG wireshark $$USER"
 
 clean:
 	cargo clean
