@@ -59,7 +59,7 @@ manifest are embedded by `build.rs`.
 ## Packages
 
 `make deb` builds a package with the binary in `/usr/bin`, the menu shortcut, the icon
-and a disabled systemd user unit. It depends on `wireshark-common`. The minimum glibc is
+and a disabled systemd user unit. It recommends `wireshark-common`. The minimum glibc is
 the one of the build machine: the release is built on Ubuntu 24.04, which means glibc
 2.39.
 

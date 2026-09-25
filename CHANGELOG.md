@@ -1,20 +1,7 @@
 # Changelog
 
-## Unreleased
+## v0.2.0 - 2026-09-25
 
-- Domains of QUIC (HTTP/3) connections: SNI is read from Initial packets of QUIC
-  versions 1 and 2 (RFC 9001, RFC 9369). A ClientHello split across several packets,
-  as Chrome sends it, is put together by offset. Previously browser connections over
-  UDP 443 were shown with only an IP unless a DNS response was seen.
-- Linux: sockets of programs under Wine are attributed to the `.exe` itself. Wine
-  keeps a copy of every socket in `wineserver`, and connections of a game could go to
-  `wineserver` when its PID was higher.
-- README rewritten with screenshots of a real session; details moved to `docs/`
-  (usage, Windows, how it works, development) in English and Russian.
-- English interface by default, Russian as the second language. The EN | RU switch
-  in the window header changes the window, the HTML report and console messages;
-  the choice is saved in the `lang` file in the cache directory. The `--lang en|ru`
-  option sets the language at startup. README in English and Russian.
 - Windows 10/11: portable zip (`make win`). Sockets via IP Helper with the owner PID,
   processes via Toolhelp32, PTR and ASN via `DnsQuery_W`. Icon, version info and
   manifest in the exe.
@@ -23,19 +10,31 @@
   and ETW (domains from DNS and SNI, traffic, .pcapng dumps). A "Restart as
   administrator" button right in the window, which stays open. dumpcap remains the
   fallback.
-- A name from DNS replaces a previously shown PTR name if it arrives later.
+- Domains of QUIC (HTTP/3) connections: SNI is read from Initial packets of QUIC
+  versions 1 and 2 (RFC 9001, RFC 9369). A ClientHello split across several packets,
+  as Chrome sends it, is put together by offset. Previously browser connections over
+  UDP 443 were shown with only an IP unless a DNS response was seen.
 - Dump: every packet is labeled with its process and domain (`frame.comment` in
   Wireshark), and the file header says what was recorded. "Process only" selects
   traffic by connection owner at stop time instead of a BPF filter by addresses at
   start: servers the game connects to later are no longer lost. Such a recording
   stops by itself 15 seconds after the process exits. The `.json` map keeps the
   process even if it exited before the recording was stopped.
+- English interface by default, Russian as the second language. The EN | RU switch
+  in the window header changes the window, the HTML report and console messages;
+  the choice is saved in the `lang` file in the cache directory. The `--lang en|ru`
+  option sets the language at startup. README in English and Russian.
+- Linux: sockets of programs under Wine are attributed to the `.exe` itself. Wine
+  keeps a copy of every socket in `wineserver`, and connections of a game could go to
+  `wineserver` when its PID was higher.
+- A name from DNS replaces a previously shown PTR name if it arrives later.
 - Window closing is tracked via the SSE channel `/api/alive` on all OSes.
 - `-i` accepts several comma-separated interfaces.
 - TIME_WAIT sockets without history are no longer listed: tens of thousands of
   local TIME_WAIT sockets pushed out live connections, and most of them lost the PID.
-- CI: fmt, clippy, tests on Linux, under Wine and on Windows; a release by tag builds
-  deb and zip, SHA256SUMS and attestation.
+- CI: fmt, clippy, tests on Ubuntu 24.04 and 26.04, under Wine and on Windows; a
+  release by tag builds deb and zip, SHA256SUMS and attestation. Building from source
+  needs Rust 1.89 or newer.
 - Window in a Chromium-based browser with its own profile and window class: it does
   not mix with regular Chrome and has its own taskbar icon. Chrome, Chromium, Edge,
   Brave and Vivaldi are detected, including snap builds.
@@ -56,6 +55,8 @@
   window.
 - Directories moved to `src/paths.rs`, window launch to `src/window.rs`, with
   groundwork for Windows.
+- README rewritten with screenshots of a real session; details moved to `docs/`
+  (usage, Windows, how it works, development) in English and Russian.
 
 ## v0.1.0 - 2026-09-20
 
