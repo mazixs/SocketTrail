@@ -4,7 +4,7 @@
 
 ## Что нужно
 
-- Rust stable 1.88 или новее (edition 2024).
+- Rust stable 1.89 или новее (edition 2024).
 - `dumpcap` с правами на захват, чтобы при проверке видеть домены и пакеты, см.
   [README](../../README.ru.md#linux).
 - Для сборки под Windows на Linux: `gcc-mingw-w64-x86-64`, `binutils-mingw-w64-x86-64`,
@@ -66,8 +66,8 @@ CRT (`+crt-static`), поэтому exe не нужен Visual C++ runtime. Ик
 ## CI и релизы
 
 `.github/workflows/ci.yml` запускается на каждый push в `main` и на pull request: fmt и
-clippy для обеих целей, тесты на Linux, под WineHQ и на Windows, Smoke тест каждой
-сборки.
+clippy для обеих целей, тесты на Ubuntu 24.04 и 26.04, под WineHQ и на Windows, Smoke
+тест каждой сборки.
 
 Релиз выпускается по тегу:
 

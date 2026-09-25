@@ -4,7 +4,7 @@
 
 ## Requirements
 
-- Rust stable 1.88 or newer (edition 2024).
+- Rust stable 1.89 or newer (edition 2024).
 - `dumpcap` with capture rights to see domains and packets while testing, see the
   [README](../README.md#linux).
 - For the Windows build on Linux: `gcc-mingw-w64-x86-64`, `binutils-mingw-w64-x86-64`
@@ -66,8 +66,8 @@ the one of the build machine: the release is built on Ubuntu 24.04, which means 
 ## CI and releases
 
 `.github/workflows/ci.yml` runs on every push to `main` and on pull requests: fmt and
-clippy for both targets, tests on Linux, under WineHQ and on Windows, and a smoke test
-of every build.
+clippy for both targets, tests on Ubuntu 24.04 and 26.04, under WineHQ and on Windows,
+and a smoke test of every build.
 
 A release is made by a tag:
 

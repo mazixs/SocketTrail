@@ -12,7 +12,7 @@ env:
 
 jobs:
   check-version:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v7
       - name: Tag matches the version in Cargo.toml
@@ -20,6 +20,8 @@ jobs:
           v=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
           [ "v$v" = "$GITHUB_REF_NAME" ] || { echo "tag is $GITHUB_REF_NAME, but Cargo.toml has $v"; exit 1; }
 
+  # Ubuntu 24.04 on purpose: the .deb needs a glibc no newer than the build machine's,
+  # and 24.04 has glibc 2.39, enough for Ubuntu 24.04+ and Debian 13+.
   build-deb:
     needs: check-version
     runs-on: ubuntu-24.04
@@ -56,7 +58,7 @@ jobs:
 
   release:
     needs: [build-deb, build-win]
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     permissions:
       contents: write
       id-token: write

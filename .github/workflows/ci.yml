@@ -19,7 +19,7 @@ env:
 
 jobs:
   lint:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -32,8 +32,13 @@ jobs:
       - run: cargo clippy --all-targets
       - run: cargo clippy --all-targets --target x86_64-pc-windows-gnu
 
+  # 24.04 is where the release .deb is built, 26.04 is the newest image.
   test-linux:
-    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-26.04]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -44,7 +49,7 @@ jobs:
 
   # Quick check of the Windows code without Windows: mingw build and tests under Wine.
   test-wine:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     env:
       WINEDEBUG: -all
     steps:
@@ -52,13 +57,14 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-pc-windows-gnu
-      # Ubuntu's Wine 9 does not report the owner PID in the socket table, WineHQ 10+ is needed.
+      # Older Wine does not report the owner PID in the socket table, WineHQ 10+ is needed.
+      # WineHQ 11 uses the new WoW64 and needs no i386 packages.
       - name: mingw-w64 and WineHQ stable
         run: |
-          sudo dpkg --add-architecture i386
+          codename=$(. /etc/os-release && echo "$VERSION_CODENAME")
           sudo mkdir -pm755 /etc/apt/keyrings
           sudo curl -fsSLo /etc/apt/keyrings/winehq-archive.key https://dl.winehq.org/wine-builds/winehq.key
-          sudo curl -fsSLo /etc/apt/sources.list.d/winehq-noble.sources https://dl.winehq.org/wine-builds/ubuntu/dists/noble/winehq-noble.sources
+          sudo curl -fsSLo "/etc/apt/sources.list.d/winehq-$codename.sources" "https://dl.winehq.org/wine-builds/ubuntu/dists/$codename/winehq-$codename.sources"
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends gcc-mingw-w64-x86-64 binutils-mingw-w64-x86-64
           sudo apt-get install -y --install-recommends winehq-stable
