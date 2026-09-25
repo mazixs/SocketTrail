@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.2.1 - 2026-09-25
 
 - Linux: with Chrome 154 the program exited 15 seconds after start while the window
   stayed open with "Connection to SocketTrail lost". Chrome now joins its command line
