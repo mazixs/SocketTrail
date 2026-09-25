@@ -58,13 +58,15 @@ jobs:
         with:
           targets: x86_64-pc-windows-gnu
       # Older Wine does not report the owner PID in the socket table, WineHQ 10+ is needed.
-      # WineHQ 11 uses the new WoW64 and needs no i386 packages.
+      # WineHQ 11 uses the new WoW64 and needs no i386 packages. apt 3 takes an armored
+      # key only with the .asc extension, the WineHQ sources file points to .key.
       - name: mingw-w64 and WineHQ stable
         run: |
           codename=$(. /etc/os-release && echo "$VERSION_CODENAME")
           sudo mkdir -pm755 /etc/apt/keyrings
-          sudo curl -fsSLo /etc/apt/keyrings/winehq-archive.key https://dl.winehq.org/wine-builds/winehq.key
-          sudo curl -fsSLo "/etc/apt/sources.list.d/winehq-$codename.sources" "https://dl.winehq.org/wine-builds/ubuntu/dists/$codename/winehq-$codename.sources"
+          sudo curl -fsSLo /etc/apt/keyrings/winehq-archive.asc https://dl.winehq.org/wine-builds/winehq.key
+          curl -fsSL "https://dl.winehq.org/wine-builds/ubuntu/dists/$codename/winehq-$codename.sources" \
+            | sed 's|winehq-archive.key|winehq-archive.asc|' | sudo tee /etc/apt/sources.list.d/winehq.sources
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends gcc-mingw-w64-x86-64 binutils-mingw-w64-x86-64
           sudo apt-get install -y --install-recommends winehq-stable
