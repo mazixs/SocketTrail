@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- .deb: the package description no longer contains the commands for capture rights,
+  the window shows them when needed. The build fails if `DEBIAN/control` has non-ASCII
+  characters: PackageKit on Ubuntu shows them as `?` in App Center.
+
 ## v0.2.0 - 2026-09-25
 
 - Windows 10/11: portable zip (`make win`). Sockets via IP Helper with the owner PID,

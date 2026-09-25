@@ -51,9 +51,14 @@ Description: network connection monitor tied to processes
  Keeps a connection history and records the traffic of the selected process
  into .pcapng.
  .
- Domains and short connections require dumpcap with capture rights:
- sudo dpkg-reconfigure wireshark-common && sudo usermod -aG wireshark \$USER
+ Packets are read through dumpcap, without root. If capture rights are
+ missing, the window shows how to grant them.
 CONTROL
+# PackageKit on Ubuntu shows every non-ASCII character of the description as "?".
+if LC_ALL=C grep -q '[^ -~]' "$ROOT/DEBIAN/control"; then
+  echo "DEBIAN/control must be plain ASCII" >&2
+  exit 1
+fi
 
 fakeroot dpkg-deb --build --root-owner-group -Zxz "$ROOT" "$OUT/" >/dev/null
 echo "$OUT/sockettrail_${VERSION}_$ARCH.deb"
