@@ -77,7 +77,8 @@ A release is made by a tag:
 
 `.github/workflows/release.yml` checks that the tag matches `Cargo.toml`, builds the
 `.deb` and the zip, writes `SHA256SUMS`, creates build attestations and publishes the
-release with the CHANGELOG section as its notes.
+release with the CHANGELOG section as its notes. GitHub keeps attestations only for
+public repositories, so while the repository is private this step is skipped.
 
 ## Translations
 

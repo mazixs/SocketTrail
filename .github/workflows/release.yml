@@ -70,7 +70,9 @@ jobs:
           path: dist
           merge-multiple: true
       - run: cd dist && sha256sum -- * > SHA256SUMS && cat SHA256SUMS
+      # GitHub does not keep attestations for private repositories of a user account.
       - uses: actions/attest@v4
+        if: ${{ !github.event.repository.private }}
         with:
           subject-path: |
             dist/*.deb
