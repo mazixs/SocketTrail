@@ -114,7 +114,10 @@ server on `127.0.0.1`. Requests with a `Host` other than `127.0.0.1:<port>` or
 foreign `Origin` are rejected, which blocks CSRF from other pages open in the browser.
 
 The window keeps an SSE channel `/api/alive` open. When the window closes and the
-channel stays silent for 10 seconds, the program finalizes the dump and exits.
+channel stays silent for 10 seconds, the program finalizes the dump and exits. On Linux
+it also watches the browser process of its own profile through the `SingletonLock` link
+in the profile and exits right after that process ends. If the process cannot be found,
+only the channel is used.
 
 ## Code layout
 

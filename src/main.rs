@@ -467,13 +467,22 @@ fn spawn_window(
     let rt = tokio::runtime::Handle::current();
     std::thread::spawn(move || match window::open(&url) {
         window::Opened::Window(w) => {
-            let t = tx.clone();
+            let (t, a) = (tx.clone(), alive.clone());
             rt.spawn(async move {
-                alive::wait_closed(alive, 10).await;
+                alive::wait_closed(a, 10).await;
                 let _ = t.send(closed_page());
             });
-            w.wait();
-            let _ = tx.send(i18n::tr("window closed", "окно закрыто"));
+            if w.wait(|| alive.seen()) {
+                let _ = tx.send(i18n::tr("window closed", "окно закрыто"));
+            } else {
+                eprintln!(
+                    "{}",
+                    t!(
+                        "[window] browser process not found, the window is tracked by the page",
+                        "[окно] процесс браузера не найден, окно отслеживается по странице"
+                    )
+                );
+            }
         }
         window::Opened::Detached => {
             eprintln!(

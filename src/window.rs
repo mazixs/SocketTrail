@@ -177,47 +177,93 @@ pub struct Watch {
 }
 
 impl Watch {
-    pub fn wait(mut self) {
+    /// `true` - окно закрыто. `false` - процесс браузера не найден, но страница на
+    /// связи: закрытие окна тогда замечает только канал /api/alive.
+    pub fn wait(mut self, page_seen: impl Fn() -> bool) -> bool {
         #[cfg(target_os = "linux")]
         {
-            let arg = format!("--user-data-dir={}", self.profile.display());
             let mut seen = false;
             let started = Instant::now();
             loop {
                 let _ = self.child.try_wait(); // забрать зомби, если исходный процесс вышел
-                if profile_browser_alive(&arg) {
+                if profile_browser_alive(&self.profile) {
                     seen = true;
-                } else if seen || started.elapsed() > Duration::from_secs(15) {
-                    return;
+                } else if seen {
+                    return true;
+                } else if started.elapsed() > Duration::from_secs(15) {
+                    return !page_seen();
                 }
                 std::thread::sleep(Duration::from_millis(700));
             }
         }
         #[cfg(not(target_os = "linux"))]
         {
-            let _ = &self.profile;
+            let _ = (&self.profile, page_seen);
             let _ = self.child.wait();
+            true
         }
     }
 }
 
-/// Есть ли главный процесс браузера (без --type=) с данным профилем.
+/// Chromium держит в профиле ссылку SingletonLock -> "<host>-<pid>" на главный
+/// процесс. Командную строку не разобрать по NUL: Chrome 154 склеивает ее через
+/// пробелы. Проверка пути в ней отсекает PID, занятый другим процессом.
 #[cfg(target_os = "linux")]
-fn profile_browser_alive(profile_arg: &str) -> bool {
-    let Ok(dir) = std::fs::read_dir("/proc") else {
+fn profile_browser_alive(profile: &Path) -> bool {
+    use std::os::unix::ffi::OsStrExt;
+    let Ok(lock) = std::fs::read_link(profile.join("SingletonLock")) else {
         return false;
     };
-    dir.flatten()
-        .filter(|e| {
-            e.file_name()
-                .to_string_lossy()
-                .bytes()
-                .all(|b| b.is_ascii_digit())
-        })
-        .filter_map(|e| std::fs::read(e.path().join("cmdline")).ok())
-        .any(|raw| {
-            let args: Vec<&[u8]> = raw.split(|b| *b == 0).collect();
-            args.contains(&profile_arg.as_bytes())
-                && !args.iter().any(|a| a.starts_with(b"--type="))
-        })
+    let Some(pid) = lock
+        .to_str()
+        .and_then(|s| s.rsplit_once('-'))
+        .and_then(|(_, p)| p.parse::<u32>().ok())
+    else {
+        return false;
+    };
+    let path = profile.as_os_str().as_bytes();
+    std::fs::read(format!("/proc/{pid}/cmdline"))
+        .is_ok_and(|c| c.windows(path.len()).any(|w| w == path))
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn profile_lock() {
+        let dir = std::env::temp_dir().join(format!("sockettrail-lock-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let lock = dir.join("SingletonLock");
+        let mut child = Command::new("sh")
+            .args(["-c", "read x", "chrome"])
+            .arg(format!("--user-data-dir={}", dir.display()))
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .spawn()
+            .unwrap();
+        let point = |pid: u32| {
+            let _ = std::fs::remove_file(&lock);
+            std::os::unix::fs::symlink(format!("my-host-{pid}"), &lock).unwrap();
+        };
+
+        assert!(!profile_browser_alive(&dir), "нет ссылки");
+        point(child.id());
+        let t = Instant::now(); // exec дочернего процесса может еще идти
+        while !profile_browser_alive(&dir) && t.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(profile_browser_alive(&dir));
+        point(std::process::id());
+        assert!(!profile_browser_alive(&dir), "PID другого процесса");
+        child.kill().unwrap();
+        child.wait().unwrap();
+        point(child.id());
+        assert!(
+            !profile_browser_alive(&dir),
+            "ссылка осталась после падения"
+        );
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }

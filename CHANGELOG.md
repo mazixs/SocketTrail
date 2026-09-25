@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Linux: with Chrome 154 the program exited 15 seconds after start while the window
+  stayed open with "Connection to SocketTrail lost". Chrome now joins its command line
+  with spaces, and the browser process of the window was no longer found. It is now
+  found through the `SingletonLock` link in the profile, and if it cannot be found, the
+  window is tracked by the page connection only.
 - .deb: the package description no longer contains the commands for capture rights,
   the window shows them when needed. The build fails if `DEBIAN/control` has non-ASCII
   characters: PackageKit on Ubuntu shows them as `?` in App Center.
