@@ -84,6 +84,7 @@ jobs:
           [ -s notes.md ] || echo "SocketTrail $GITHUB_REF_NAME" > notes.md
       - uses: softprops/action-gh-release@v3
         with:
+          name: SocketTrail ${{ github.ref_name }}
           body_path: notes.md
           files: |
             dist/*.deb
