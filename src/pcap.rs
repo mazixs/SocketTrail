@@ -25,6 +25,7 @@ pub struct Packet {
 fn be16(b: &[u8], o: usize) -> Option<u16> {
     Some(u16::from_be_bytes([*b.get(o)?, *b.get(o + 1)?]))
 }
+#[cfg(any(not(windows), test))]
 fn le32(b: &[u8], o: usize) -> Option<u32> {
     Some(u32::from_le_bytes([
         *b.get(o)?,
@@ -35,6 +36,7 @@ fn le32(b: &[u8], o: usize) -> Option<u32> {
 }
 
 /// Инкрементальный разборщик: кормим байтами, получаем готовые пакеты.
+#[cfg(any(not(windows), test))]
 pub struct PcapngReader {
     buf: Vec<u8>,
     /// linktype по индексу интерфейса, в порядке появления IDB
@@ -42,6 +44,7 @@ pub struct PcapngReader {
     quic: quic::Assembler,
 }
 
+#[cfg(any(not(windows), test))]
 impl PcapngReader {
     pub fn new() -> Self {
         Self {

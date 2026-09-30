@@ -10,7 +10,7 @@ use std::io::{BufWriter, Write};
 use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
 use std::process::Command;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 use tokio::sync::mpsc::UnboundedSender;
@@ -124,6 +124,7 @@ struct Sink {
 }
 
 static SINK: OnceLock<Sink> = OnceLock::new();
+static ACTIVE: AtomicBool = AtomicBool::new(false);
 
 /// Работающий захват. Drop останавливает сессию и pktmon.
 pub struct Session {
@@ -240,6 +241,7 @@ pub fn start(tx: UnboundedSender<Packet>) -> Result<Session, Text> {
         .into());
     }
 
+    let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
     let thread = std::thread::spawn(move || {
         let mut name = wide(SESSION);
         let mut log: EVENT_TRACE_LOGFILEW = unsafe { std::mem::zeroed() };
@@ -249,9 +251,12 @@ pub fn start(tx: UnboundedSender<Packet>) -> Result<Session, Text> {
         log.Anonymous2.EventRecordCallback = Some(on_event);
         let h = unsafe { OpenTraceW(&mut log) };
         if h.Value == u64::MAX {
-            eprintln!("[capture] OpenTrace failed");
+            let error = std::io::Error::last_os_error();
+            let _ = ready_tx.send(Err(error));
             return;
         }
+        ACTIVE.store(true, Ordering::Release);
+        let _ = ready_tx.send(Ok(()));
         unsafe {
             ProcessTrace(
                 &h as *const PROCESSTRACE_HANDLE,
@@ -261,15 +266,32 @@ pub fn start(tx: UnboundedSender<Packet>) -> Result<Session, Text> {
             );
             CloseTrace(h);
         }
+        ACTIVE.store(false, Ordering::Release);
     });
-    Ok(Session {
+    let session = Session {
         control,
         thread: Some(thread),
-    })
+    };
+    match ready_rx.recv_timeout(std::time::Duration::from_secs(5)) {
+        Ok(Ok(())) => Ok(session),
+        result => {
+            let error = match result {
+                Ok(Err(e)) => e.to_string(),
+                Err(e) => e.to_string(),
+                Ok(Ok(())) => unreachable!(),
+            };
+            drop(session);
+            Err(text!(
+                "ETW reader did not start: {error}",
+                "Чтение ETW не запустилось: {error}"
+            ))
+        }
+    }
 }
 
 impl Drop for Session {
     fn drop(&mut self) {
+        ACTIVE.store(false, Ordering::Release);
         dump_stop();
         let mut p = props();
         unsafe {
@@ -404,11 +426,17 @@ fn write_epb(
 }
 
 pub fn running() -> bool {
-    SINK.get().is_some()
+    ACTIVE.load(Ordering::Acquire)
 }
 
 /// Запись дампа из уже идущего захвата.
 pub fn dump_start(path: &str) -> std::io::Result<()> {
+    if !running() {
+        return Err(std::io::Error::other(t!(
+            "capture is not running",
+            "захват не запущен"
+        )));
+    }
     let sink = SINK
         .get()
         .ok_or_else(|| std::io::Error::other(t!("capture is not running", "захват не запущен")))?;

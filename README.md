@@ -19,10 +19,10 @@ including games under Proton and Wine.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/main-en-dark.png">
-  <img alt="SocketTrail window: steamcmd.exe under Wine downloading from Valve, Akamai, Fastly and CloudFront, each connection with its domain, network owner and traffic" src="docs/images/main-en-light.png">
+  <img alt="SocketTrail window with synthetic game.exe connections, example domains, network owner and traffic" src="docs/images/main-en-light.png">
 </picture>
 
-<p align="center"><sub>A real session: <code>steamcmd.exe</code> under Wine downloads a dedicated server from several CDNs at once.</sub></p>
+<p align="center"><sub>Demonstration data: <code>game.exe</code>, example domains and documentation IP addresses. No real traffic is shown.</sub></p>
 
 Routing tools, split tunneling and proxy rules work with domains, while packet
 sniffers and firewalls mostly show IP addresses. SocketTrail closes the gap: pick a
@@ -88,7 +88,9 @@ ask: **More info** -> **Run anyway**.
 
 The process and connection list works right away. The **Restart as administrator**
 button in the window turns on packet capture: domains of browsers, traffic volume and
-dumps. Details are in [docs/windows.md](docs/windows.md).
+dumps. No CMD or PowerShell console opens; the log is saved to
+`%LOCALAPPDATA%\SocketTrail\sockettrail.log`. Windows capture uses only the built-in
+PktMon/ETW engine. Details are in [docs/windows.md](docs/windows.md).
 
 > [!NOTE]
 > Domains fill in gradually. A name is learned when a program resolves it or opens

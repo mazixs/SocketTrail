@@ -128,7 +128,7 @@ only the channel is used.
 | `src/sockets/` | socket snapshot: `/proc/net/*` and inode -> PID on Linux, IP Helper tables on Windows |
 | `src/pcap.rs` | pcapng stream parsing, SNI from the TLS ClientHello, DNS responses |
 | `src/quic.rs` | SNI from QUIC Initial: keys, decryption, reassembly of the ClientHello |
-| `src/capture.rs` | `dumpcap` control: live stream and dump recording |
+| `src/capture/` | platform capture: dumpcap on Linux, own PktMon/ETW engine on Windows |
 | `src/etw.rs` | Windows: capture through PktMon and ETW, `.pcapng` writing |
 | `src/dnscache.rs` | Windows: names from the system DNS cache |
 | `src/annotate.rs` | dump post-processing: packet labels, process traffic selection |
@@ -140,5 +140,6 @@ only the channel is used.
 | `src/window.rs` | window in a Chromium-based browser with its own profile, opening folders |
 | `src/alive.rs` | SSE channel that tells when the window is closed |
 | `src/elevate.rs` | Windows: privilege check and restart as administrator |
+| `src/win_startup.rs` | Windows: windowed startup and file log |
 | `src/paths.rs` | cache and dump directories |
 | `ui/index.html` | the whole interface, embedded into the binary |

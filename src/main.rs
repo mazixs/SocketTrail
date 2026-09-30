@@ -1,5 +1,7 @@
 //! SocketTrail - привязанный к процессу монитор сетевых соединений.
 
+#![cfg_attr(windows, windows_subsystem = "windows")]
+
 // первым: макросы t! и text! нужны остальным модулям
 #[macro_use]
 mod i18n;
@@ -22,6 +24,8 @@ mod report;
 mod resolve;
 mod sockets;
 mod state;
+#[cfg(windows)]
+mod win_startup;
 mod window;
 
 use std::collections::{HashMap, HashSet};
@@ -93,7 +97,7 @@ SocketTrail - network connection monitor tied to processes.
 Usage: sockettrail [options]
 
   -i, --iface <name>  dumpcap interface, several separated by commas (default any:
-                      all at once on Linux, all Npcap adapters except loopback on Windows).
+                      all at once on Linux). This option is Linux-only.
                       Capture through PktMon (Windows, as administrator) uses all adapters
       --port <port>   port of the local UI (default 8787)
       --no-open       do not open the window, only start the server (background collection)
@@ -107,7 +111,7 @@ the next free one is used.
 
 The window is Chrome, Chromium, Edge or Brave in app mode with its own profile.
 Closing the window exits the program, an ongoing dump is finished and closed.
-Without a Chromium browser a regular tab opens, and the program runs until Ctrl+C.
+Without a Chromium browser a regular tab opens; closing it also exits the program.
 ";
 
 const HELP_RU: &str = "\
@@ -116,7 +120,7 @@ SocketTrail - монитор сетевых соединений с привяз
 Использование: sockettrail [ключи]
 
   -i, --iface <имя>   интерфейс dumpcap, несколько - через запятую (по умолчанию any:
-                      на Linux все сразу, на Windows все адаптеры Npcap кроме loopback).
+                      на Linux все сразу). Этот ключ действует только на Linux.
                       Захват через PktMon (Windows, от администратора) идет со всех адаптеров
       --port <порт>   порт локального интерфейса (по умолчанию 8787)
       --no-open       не открывать окно, только поднять сервер (фоновый сбор)
@@ -130,7 +134,7 @@ SocketTrail - монитор сетевых соединений с привяз
 
 Окно - Chrome, Chromium, Edge или Brave в режиме приложения со своим профилем.
 Закрытие окна завершает программу, дамп при этом дописывается и закрывается.
-Без Chromium-браузера открывается обычная вкладка, и программа работает до Ctrl+C.
+Без Chromium-браузера открывается обычная вкладка; ее закрытие тоже завершает программу.
 ";
 
 struct Args {
@@ -165,6 +169,9 @@ fn parse_args() -> Args {
     while i < argv.len() {
         match argv[i].as_str() {
             "-h" | "--help" => {
+                #[cfg(windows)]
+                win_startup::help(i18n::tr(HELP_EN, HELP_RU));
+                #[cfg(not(windows))]
                 print!("{}", i18n::tr(HELP_EN, HELP_RU));
                 std::process::exit(0);
             }
@@ -265,6 +272,8 @@ async fn bind_port(pref: u16, open: bool) -> (tokio::net::TcpListener, u16) {
 
 #[tokio::main]
 async fn main() {
+    #[cfg(windows)]
+    let _log = win_startup::init();
     let args = parse_args();
     let iface = args.iface.clone();
 
@@ -485,13 +494,10 @@ fn spawn_window(
             }
         }
         window::Opened::Detached => {
-            eprintln!(
-                "{}",
-                t!(
-                    "[window] opened without tracking - exit with Ctrl+C",
-                    "[окно] открыто без отслеживания - завершение по Ctrl+C"
-                )
-            );
+            rt.spawn(async move {
+                alive::wait_closed(alive, 10).await;
+                let _ = tx.send(closed_page());
+            });
         }
         window::Opened::Failed => {
             eprintln!(

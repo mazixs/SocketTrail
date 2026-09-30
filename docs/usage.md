@@ -21,7 +21,7 @@ mode with a separate profile. It does not mix with your regular browser and has 
 own taskbar icon. Without a Chromium-based browser a regular tab opens.
 
 **Closing the window exits the program**: an unfinished dump is finalized, the name
-cache is saved, `dumpcap` is stopped. Ctrl+C and SIGTERM do the same. Running
+cache is saved, capture is stopped. Ctrl+C and SIGTERM do the same. Running
 SocketTrail again does not start a second copy: the window of the running one opens.
 
 The header holds the counters (connections in view, in history, packets parsed), the
@@ -99,16 +99,13 @@ files and buttons to open the folder or copy its path.
 On stop every packet is labeled with its process and domain. In Wireshark the label is
 the `frame.comment` field: right-click it in the packet details and choose
 **Apply as Column**, or filter with `frame.comment contains "game.exe"`. The same
-works in `tshark`. Here is a dump of `steamcmd.exe` under Wine:
+works in `tshark`. The following is a synthetic example, not a real session:
 
 ```console
-$ tshark -r steamcmd.exe-20260924-193226.pcapng -T fields -e frame.comment | sort | uniq -c | sort -rn | head -6
- 139498 steamcmd.exe [2090] -> fastly.cdn.steampipe.steamcontent.com
- 126884 steamcmd.exe [2090] -> steampipe.akamaized.net
- 100588 steamcmd.exe [2090] -> ztrtslq.v.bcdnx.com
-  87159 steamcmd.exe [2090] -> cache1-sto2.steamcontent.com
-  83006 steamcmd.exe [2090] -> d2n229r1kz6x2f.cloudfront.net
-  50885 steamcmd.exe [2090] -> cache13-fra1.steamcontent.com
+$ tshark -r game.exe-demo.pcapng -T fields -e frame.comment | sort | uniq -c | sort -rn | head -3
+ 120 game.exe [1201] -> cdn.example.com
+  80 game.exe [1201] -> api.example.com
+  40 game.exe [1201] -> updates.example.com
 ```
 
 A `.json` file is saved next to the dump: the recording period, the process and the
@@ -149,7 +146,7 @@ and be served by the network of another, so both are shown.
 
 | Option | Meaning |
 |---|---|
-| `-i`, `--iface <name>` | capture interface, several separated by commas. Default `any` on Linux, all Npcap adapters except loopback on Windows. PktMon capture on Windows always uses all adapters |
+| `-i`, `--iface <name>` | capture interface, several separated by commas. Linux only, default `any`. The own PktMon/ETW engine on Windows always uses all adapters |
 | `--port <port>` | port of the local interface, default 8787. If another program holds it, the next free one is used |
 | `--no-open` | start the server only, without a window |
 | `--lang <en\|ru>` | language for this run |
@@ -174,7 +171,7 @@ connects to the running service, and closing it does not stop the collection.
 ## Language
 
 The interface is available in English and Russian, English by default. The EN | RU
-switch in the header changes the window, the HTML report and console messages, and the
+switch in the header changes the window, the HTML report and log messages, and the
 choice is saved. `--lang en|ru` sets the language at startup.
 
 ## Where data is stored

@@ -124,7 +124,7 @@ SocketTrail, после перезапуска осталось бы без им
 | `src/sockets/` | снимок сокетов: `/proc/net/*` и inode -> PID на Linux, таблицы IP Helper на Windows |
 | `src/pcap.rs` | разбор потока pcapng, SNI из TLS ClientHello, DNS-ответы |
 | `src/quic.rs` | SNI из QUIC Initial: ключи, расшифровка, сборка ClientHello |
-| `src/capture.rs` | управление `dumpcap`: живой поток и запись дампа |
+| `src/capture/` | платформенный захват: dumpcap на Linux, свой движок PktMon/ETW на Windows |
 | `src/etw.rs` | Windows: захват через PktMon и ETW, запись `.pcapng` |
 | `src/dnscache.rs` | Windows: имена из DNS-кеша системы |
 | `src/annotate.rs` | обработка дампа: подписи пакетов, отбор трафика процесса |
@@ -136,5 +136,6 @@ SocketTrail, после перезапуска осталось бы без им
 | `src/window.rs` | окно в браузере на Chromium со своим профилем, открытие папок |
 | `src/alive.rs` | SSE-канал, по которому видно, что окно закрыто |
 | `src/elevate.rs` | Windows: проверка прав и перезапуск от администратора |
+| `src/win_startup.rs` | Windows: оконный запуск и журнал в файле |
 | `src/paths.rs` | каталоги кеша и дампов |
 | `ui/index.html` | весь интерфейс, вшит в бинарь |

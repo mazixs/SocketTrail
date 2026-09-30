@@ -7,8 +7,8 @@ and how much, plus recording the traffic of a selected process into .pcapng.
 Running
 -------
 1. Extract the archive to any folder and run sockettrail.exe.
-2. A Microsoft Edge (or Chrome) window with the interface opens. The black
-   console window is the program log: closing either window exits the program.
+2. A Microsoft Edge (or Chrome) window with the interface opens. No CMD/PowerShell
+   console opens. Closing the application window exits the program.
 3. Windows may show "Windows protected your PC": the exe is not signed yet.
    Click "More info" -> "Run anyway".
 
@@ -33,8 +33,8 @@ file is labeled with its process and domain: in Wireshark this is the
 frame.comment field, filter frame.comment contains "game.exe". A .json file
 with the connection map is saved next to it.
 
-If Wireshark with Npcap is already installed, SocketTrail uses its dumpcap
-without administrator rights.
+Only the built-in PktMon/ETW engine is used. Wireshark, Npcap and dumpcap are
+never started. Packet capture and dumps require administrator rights.
 
 Language
 --------
@@ -45,6 +45,7 @@ Where data is stored
 --------------------
 Dumps:              %USERPROFILE%\SocketTrail
 Cache and profile:  %LOCALAPPDATA%\SocketTrail
+Log:                %LOCALAPPDATA%\SocketTrail\sockettrail.log
 
 Command line options: sockettrail.exe --help
 Source code and bug reports: https://github.com/mazixs/SocketTrail
@@ -59,8 +60,8 @@ SocketTrail для Windows
 Запуск
 ------
 1. Распакуйте архив в любую папку и запустите sockettrail.exe.
-2. Откроется окно Microsoft Edge (или Chrome) с интерфейсом. Черное окно
-   консоли - это журнал программы: закрытие любого из окон завершает работу.
+2. Откроется окно Microsoft Edge (или Chrome) с интерфейсом. Консоль
+   CMD/PowerShell не открывается. Закрытие окна приложения завершает работу.
 3. Windows может показать "Система Windows защитила ваш компьютер": exe пока
    не подписан. Нажмите "Подробнее" -> "Выполнить в любом случае".
 
@@ -83,8 +84,8 @@ SocketTrail для Windows
 подписан процессом и доменом: в Wireshark это поле frame.comment, фильтр
 frame.comment contains "game.exe". Рядом лежит .json с картой соединений.
 
-Если Wireshark с Npcap уже установлен, без прав администратора SocketTrail
-использует его dumpcap.
+Используется только собственный движок PktMon/ETW. Wireshark, Npcap и dumpcap
+не запускаются. Захват пакетов и запись дампов требуют прав администратора.
 
 Язык
 ----
@@ -95,6 +96,7 @@ frame.comment contains "game.exe". Рядом лежит .json с картой �
 ----------------
 Дампы:           %USERPROFILE%\SocketTrail
 Кеш и профиль:   %LOCALAPPDATA%\SocketTrail
+Журнал:          %LOCALAPPDATA%\SocketTrail\sockettrail.log
 
 Ключи командной строки: sockettrail.exe --help
 Исходный код и сообщения об ошибках: https://github.com/mazixs/SocketTrail

@@ -38,6 +38,9 @@ packaging/smoke.sh target/release/sockettrail   # starts the binary and checks t
 
 ## Windows
 
+Windows packaging checks that the exe uses the GUI subsystem and cannot create a
+console on startup. Capture uses only the own PktMon/ETW engine.
+
 Cross-compiling uses mingw-w64, and `.cargo/config.toml` sets Wine as the runner, so
 tests of the Windows code run on Linux:
 
@@ -93,9 +96,13 @@ English is the source language, Russian is the translation.
 
 A new string needs both languages.
 
-## Screenshots
+## Screenshots and personal data
 
-The images in `docs/images` are taken from a real session at 1600x900 with a device
-scale factor of 2, in the dark and the light theme, and compressed with `pngquant`.
-They must not show personal data: your own traffic, hosts, IP addresses or process
-list.
+Documentation screenshots render the actual interface with synthetic data at
+1600x900 and device scale factor 2, in both themes and languages. Dump panel images
+show only the header and dump panel. Use `example.com` subdomains and documentation addresses
+from `192.0.2.0/24`, `198.51.100.0/24` or `203.0.113.0/24`; paths use a neutral
+`/home/user` placeholder. Do not publish real traffic, process lists, machine names,
+local paths, screenshots or file metadata that identify a person or their machine.
+Only the maintainer nickname and email may identify the author in repository
+documentation and release notes.

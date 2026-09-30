@@ -45,7 +45,7 @@ pub fn relaunch(args: &str) -> Result<(), String> {
     info.lpVerb = verb.as_ptr();
     info.lpFile = file.as_ptr();
     info.lpParameters = params.as_ptr();
-    info.nShow = 1; // SW_SHOWNORMAL: консоль с журналом видна, как при обычном запуске
+    info.nShow = 1; // SW_SHOWNORMAL: GUI-exe не создает консоль, окно открывается отдельно
     if unsafe { ShellExecuteExW(&mut info) } == 0 {
         let e = std::io::Error::last_os_error();
         return Err(if e.raw_os_error() == Some(1223) {

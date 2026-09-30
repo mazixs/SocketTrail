@@ -19,10 +19,10 @@
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/main-ru-dark.png">
-  <img alt="Окно SocketTrail: steamcmd.exe под Wine качает с Valve, Akamai, Fastly и CloudFront, у каждого соединения домен, владелец сети и трафик" src="docs/images/main-ru-light.png">
+  <img alt="Окно SocketTrail с демонстрационными соединениями game.exe, примерными доменами и трафиком" src="docs/images/main-ru-light.png">
 </picture>
 
-<p align="center"><sub>Настоящая сессия: <code>steamcmd.exe</code> под Wine качает выделенный сервер сразу с нескольких CDN.</sub></p>
+<p align="center"><sub>Демонстрационные данные: <code>game.exe</code>, примерные домены и адреса для документации. Реальный трафик не показан.</sub></p>
 
 Маршрутизация, split tunneling и правила прокси работают с доменами, а снифферы и
 фаерволы в основном показывают IP-адреса. SocketTrail закрывает этот разрыв: выберите
@@ -88,7 +88,9 @@ sudo usermod -aG wireshark "$USER"       # затем перезайдите в 
 
 Список процессов и соединений работает сразу. Кнопка **Перезапустить от
 администратора** в окне включает захват пакетов: домены браузеров, объем трафика и
-дампы. Подробности в [docs/ru/windows.md](docs/ru/windows.md).
+дампы. Консоль CMD или PowerShell не открывается; журнал сохраняется в
+`%LOCALAPPDATA%\SocketTrail\sockettrail.log`. Захват на Windows использует только
+встроенный движок PktMon/ETW. Подробности в [docs/ru/windows.md](docs/ru/windows.md).
 
 > [!NOTE]
 > Домены появляются постепенно. Имя становится известно, когда программа его

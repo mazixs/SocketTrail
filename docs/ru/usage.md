@@ -22,7 +22,7 @@ SocketTrail открывает собственное окно: Chrome, Chromium
 вкладка.
 
 **Закрытие окна завершает программу**: незаконченный дамп дописывается, кеш имен
-сохраняется, `dumpcap` останавливается. Ctrl+C и SIGTERM делают то же самое.
+сохраняется, захват останавливается. Ctrl+C и SIGTERM делают то же самое.
 Повторный запуск не создает вторую копию, а открывает окно уже работающей.
 
 В шапке: счетчики (соединений в выборке, в истории, разобранных пакетов), интерфейс
@@ -100,16 +100,13 @@ CDN видна одна строка с числом сессий, скольк�
 При остановке каждый пакет подписывается процессом и доменом. В Wireshark подпись
 лежит в поле `frame.comment`: щелкните по нему правой кнопкой в деталях пакета и
 выберите **Apply as Column**, либо отфильтруйте `frame.comment contains "game.exe"`.
-В `tshark` работает то же самое. Вот дамп `steamcmd.exe` под Wine:
+В `tshark` работает то же самое. Ниже демонстрационный пример, а не реальная сессия:
 
 ```console
-$ tshark -r steamcmd.exe-20260924-193226.pcapng -T fields -e frame.comment | sort | uniq -c | sort -rn | head -6
- 139498 steamcmd.exe [2090] -> fastly.cdn.steampipe.steamcontent.com
- 126884 steamcmd.exe [2090] -> steampipe.akamaized.net
- 100588 steamcmd.exe [2090] -> ztrtslq.v.bcdnx.com
-  87159 steamcmd.exe [2090] -> cache1-sto2.steamcontent.com
-  83006 steamcmd.exe [2090] -> d2n229r1kz6x2f.cloudfront.net
-  50885 steamcmd.exe [2090] -> cache13-fra1.steamcontent.com
+$ tshark -r game.exe-demo.pcapng -T fields -e frame.comment | sort | uniq -c | sort -rn | head -3
+ 120 game.exe [1201] -> cdn.example.com
+  80 game.exe [1201] -> api.example.com
+  40 game.exe [1201] -> updates.example.com
 ```
 
 Рядом с дампом сохраняется `.json`: период записи, процесс и PID его группы, все
@@ -149,7 +146,7 @@ $ tshark -r steamcmd.exe-20260924-193226.pcapng -T fields -e frame.comment | sor
 
 | Ключ | Значение |
 |---|---|
-| `-i`, `--iface <имя>` | интерфейс захвата, несколько через запятую. По умолчанию `any` на Linux и все адаптеры Npcap, кроме loopback, на Windows. Захват через PktMon на Windows всегда идет со всех адаптеров |
+| `-i`, `--iface <имя>` | интерфейс захвата, несколько через запятую. Только Linux, по умолчанию `any`. Собственный захват PktMon/ETW на Windows всегда идет со всех адаптеров |
 | `--port <порт>` | порт локального интерфейса, по умолчанию 8787. Если он занят другой программой, берется следующий свободный |
 | `--no-open` | запустить только сервер, без окна |
 | `--lang <en\|ru>` | язык на этот запуск |
@@ -174,7 +171,7 @@ systemctl --user enable --now sockettrail
 ## Язык
 
 Интерфейс есть на английском и русском, по умолчанию английский. Переключатель
-EN | RU в шапке меняет язык окна, HTML-отчета и сообщений в консоли, выбор
+EN | RU в шапке меняет язык окна, HTML-отчета и сообщений в журнале, выбор
 сохраняется. `--lang en|ru` задает язык при запуске.
 
 ## Где лежат данные

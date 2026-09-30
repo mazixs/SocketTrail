@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.2.2 - 2026-09-30
+
+- Windows: the application uses the GUI subsystem. Normal launches and administrator
+  restarts no longer open a CMD or PowerShell console; the interface remains in its
+  application window. Diagnostics are saved to `%LOCALAPPDATA%\SocketTrail\sockettrail.log`.
+- Windows: capture and dumps use only SocketTrail's own PktMon/ETW engine. The
+  Wireshark/Npcap/dumpcap fallback and its console signal dependency are removed.
+- Windows: ETW startup waits for the packet reader to be ready. An inactive or
+  failed capture cannot start a misleading empty dump.
+- Closing a regular browser tab also stops collection in an interactive launch.
+- Windows packaging rejects console-subsystem executables.
+- Documentation: screenshots and dump examples use synthetic data, example domains
+  and documentation IP addresses instead of a real session. Personal data is limited
+  to the maintainer nickname and email.
+
 ## v0.2.1 - 2026-09-25
 
 - Linux: with Chrome 154 the program exited 15 seconds after start while the window
