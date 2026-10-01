@@ -90,7 +90,7 @@ fn read_proc(pid: i32) -> Option<ProcInfo> {
         || comm.starts_with("wine")
         || comm.ends_with(".exe");
 
-    // Для wine comm обрезан до 15 символов и часто бесполезен ("AION2.exe" -> "GameThread").
+    // У Wine comm ограничен 15 символами и может содержать имя потока вместо .exe.
     let name = if proton {
         exe_from_cmdline(&cmdline).unwrap_or_else(|| comm.clone())
     } else {
