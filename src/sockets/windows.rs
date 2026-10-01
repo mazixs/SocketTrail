@@ -2,16 +2,20 @@
 //!
 //! У UDP в таблице нет удаленного адреса, поэтому UDP-сокеты всегда приходят
 //! как UNCONNECTED; соединения по ним складываются из пакетов (владелец - по
-//! локальному порту, см. Store::apply_sockets).
+//! локальному адресу и порту, см. Store::apply_sockets).
 
+use std::collections::HashSet;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 use windows_sys::Win32::Foundation::{ERROR_INSUFFICIENT_BUFFER, NO_ERROR};
 use windows_sys::Win32::NetworkManagement::IpHelper::{
-    GetExtendedTcpTable, GetExtendedUdpTable, MIB_TCP6ROW_OWNER_PID, MIB_TCPROW_OWNER_PID,
-    MIB_UDP6ROW_OWNER_PID, MIB_UDPROW_OWNER_PID, TCP_TABLE_OWNER_PID_ALL, UDP_TABLE_OWNER_PID,
+    FreeMibTable, GetExtendedTcpTable, GetExtendedUdpTable, GetUnicastIpAddressTable,
+    MIB_TCP6ROW_OWNER_PID, MIB_TCPROW_OWNER_PID, MIB_UDP6ROW_OWNER_MODULE, MIB_UDP6ROW_OWNER_PID,
+    MIB_UDPROW_OWNER_MODULE, MIB_UDPROW_OWNER_PID, MIB_UNICASTIPADDRESS_ROW,
+    MIB_UNICASTIPADDRESS_TABLE, TCP_TABLE_OWNER_PID_ALL, UDP_TABLE_OWNER_MODULE,
+    UDP_TABLE_OWNER_PID,
 };
-use windows_sys::Win32::Networking::WinSock::{AF_INET, AF_INET6};
+use windows_sys::Win32::Networking::WinSock::{AF_INET, AF_INET6, AF_UNSPEC};
 
 use super::{Proto, SockEntry, udp_state};
 
@@ -93,8 +97,35 @@ fn tcp(af: u16) -> Option<Vec<u64>> {
     fetch(|p, s| unsafe { GetExtendedTcpTable(p, s, 0, af as u32, TCP_TABLE_OWNER_PID_ALL, 0) })
 }
 
-fn udp(af: u16) -> Option<Vec<u64>> {
-    fetch(|p, s| unsafe { GetExtendedUdpTable(p, s, 0, af as u32, UDP_TABLE_OWNER_PID, 0) })
+pub fn local_addresses() -> Option<HashSet<IpAddr>> {
+    let mut table: *mut MIB_UNICASTIPADDRESS_TABLE = std::ptr::null_mut();
+    // SAFETY: API выделяет таблицу с NumEntries строками, освобождаем FreeMibTable.
+    unsafe {
+        if GetUnicastIpAddressTable(AF_UNSPEC, &mut table) != NO_ERROR || table.is_null() {
+            return None;
+        }
+        let mut ips = HashSet::new();
+        let first = std::ptr::addr_of!((*table).Table).cast::<MIB_UNICASTIPADDRESS_ROW>();
+        let entries = std::slice::from_raw_parts(first, (*table).NumEntries as usize);
+        for row in entries {
+            let addr = &row.Address;
+            match addr.si_family {
+                AF_INET => {
+                    ips.insert(v4(addr.Ipv4.sin_addr.S_un.S_addr));
+                }
+                AF_INET6 => {
+                    ips.insert(v6(addr.Ipv6.sin6_addr.u.Byte));
+                }
+                _ => {}
+            }
+        }
+        FreeMibTable(table.cast());
+        Some(ips)
+    }
+}
+
+fn udp(af: u16, class: i32) -> Option<Vec<u64>> {
+    fetch(|p, s| unsafe { GetExtendedUdpTable(p, s, 0, af as u32, class, 0) })
 }
 
 pub fn snapshot(_scan_pids: &[i32]) -> Vec<SockEntry> {
@@ -109,6 +140,7 @@ pub fn snapshot(_scan_pids: &[i32]) -> Vec<SockEntry> {
                 rport: port(r.dwRemotePort),
                 state: tcp_state(r.dwState),
                 pid: owner(r.dwOwningPid),
+                cookie: None,
             });
         }
     }
@@ -122,12 +154,26 @@ pub fn snapshot(_scan_pids: &[i32]) -> Vec<SockEntry> {
                 rport: port(r.dwRemotePort),
                 state: tcp_state(r.dwState),
                 pid: owner(r.dwOwningPid),
+                cookie: None,
             });
         }
     }
     let unspec4 = IpAddr::V4(Ipv4Addr::UNSPECIFIED);
     let unspec6 = IpAddr::V6(Ipv6Addr::UNSPECIFIED);
-    if let Some(b) = udp(AF_INET) {
+    if let Some(b) = udp(AF_INET, UDP_TABLE_OWNER_MODULE) {
+        for r in rows::<MIB_UDPROW_OWNER_MODULE>(&b) {
+            out.push(SockEntry {
+                proto: Proto::Udp,
+                local: v4(r.dwLocalAddr),
+                lport: port(r.dwLocalPort),
+                remote: unspec4,
+                rport: 0,
+                state: udp_state(0),
+                pid: owner(r.dwOwningPid),
+                cookie: (r.liCreateTimestamp != 0).then_some(r.liCreateTimestamp as u64),
+            });
+        }
+    } else if let Some(b) = udp(AF_INET, UDP_TABLE_OWNER_PID) {
         for r in rows::<MIB_UDPROW_OWNER_PID>(&b) {
             out.push(SockEntry {
                 proto: Proto::Udp,
@@ -137,10 +183,24 @@ pub fn snapshot(_scan_pids: &[i32]) -> Vec<SockEntry> {
                 rport: 0,
                 state: udp_state(0),
                 pid: owner(r.dwOwningPid),
+                cookie: None,
             });
         }
     }
-    if let Some(b) = udp(AF_INET6) {
+    if let Some(b) = udp(AF_INET6, UDP_TABLE_OWNER_MODULE) {
+        for r in rows::<MIB_UDP6ROW_OWNER_MODULE>(&b) {
+            out.push(SockEntry {
+                proto: Proto::Udp,
+                local: v6(r.ucLocalAddr),
+                lport: port(r.dwLocalPort),
+                remote: unspec6,
+                rport: 0,
+                state: udp_state(0),
+                pid: owner(r.dwOwningPid),
+                cookie: (r.liCreateTimestamp != 0).then_some(r.liCreateTimestamp as u64),
+            });
+        }
+    } else if let Some(b) = udp(AF_INET6, UDP_TABLE_OWNER_PID) {
         for r in rows::<MIB_UDP6ROW_OWNER_PID>(&b) {
             out.push(SockEntry {
                 proto: Proto::Udp,
@@ -150,6 +210,7 @@ pub fn snapshot(_scan_pids: &[i32]) -> Vec<SockEntry> {
                 rport: 0,
                 state: udp_state(0),
                 pid: owner(r.dwOwningPid),
+                cookie: None,
             });
         }
     }
@@ -160,7 +221,25 @@ pub fn snapshot(_scan_pids: &[i32]) -> Vec<SockEntry> {
 mod tests {
     use super::*;
     use std::io::Read;
-    use std::net::{TcpListener, TcpStream};
+    use std::net::{TcpListener, TcpStream, UdpSocket};
+
+    #[test]
+    fn interface_addresses_include_loopback() {
+        let ips = local_addresses().unwrap();
+        assert!(ips.contains(&IpAddr::V4(Ipv4Addr::LOCALHOST)));
+    }
+
+    #[test]
+    fn sees_own_udp_endpoint() {
+        let udp = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let addr = udp.local_addr().unwrap();
+        let pid = std::process::id() as i32;
+        let socks = snapshot(&[]);
+        assert!(socks.iter().any(|s| s.proto == Proto::Udp
+            && s.local == addr.ip()
+            && s.lport == addr.port()
+            && s.pid == Some(pid)));
+    }
 
     #[test]
     fn byte_order() {

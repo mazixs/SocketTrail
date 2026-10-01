@@ -31,7 +31,10 @@ Dumps
 game and stops by itself 15 seconds after the game exits. Every packet in the
 file is labeled with its process and domain: in Wireshark this is the
 frame.comment field, filter frame.comment contains "game.exe". A .json file
-with the connection map is saved next to it.
+with the connection map is saved next to it. Unknown or disputed connection
+owners are excluded from process-only dumps. Recording controls remain disabled
+during finalization. Capture or processing failures show an error; if filtering
+fails, the original whole-host file is preserved and identified as unfiltered.
 
 Only the built-in PktMon/ETW engine is used. Wireshark, Npcap and dumpcap are
 never started. Packet capture and dumps require administrator rights.
@@ -83,6 +86,10 @@ SocketTrail для Windows
 останавливается сам через 15 секунд после ее выхода. Каждый пакет в файле
 подписан процессом и доменом: в Wireshark это поле frame.comment, фильтр
 frame.comment contains "game.exe". Рядом лежит .json с картой соединений.
+Соединения с неизвестным или спорным владельцем исключаются из дампа процесса.
+Кнопка записи недоступна до завершения обработки. Ошибки захвата и обработки
+показываются в интерфейсе; при сбое фильтрации исходный файл всего компьютера
+сохраняется и явно отмечается как нефильтрованный.
 
 Используется только собственный движок PktMon/ETW. Wireshark, Npcap и dumpcap
 не запускаются. Захват пакетов и запись дампов требуют прав администратора.

@@ -44,7 +44,8 @@ recording are unavailable without administrator rights.
 ## Differences from Linux
 
 - The Windows UDP table has no remote address, so UDP targets come only from packet
-  parsing, and the owner is matched by local port.
+  parsing. Ownership is matched by local address, port and IP family; socket
+  creation timestamps prevent a reused port from claiming older traffic.
 - PktMon captures from all network adapters. The `-i` option has no effect on Windows.
 - While SocketTrail runs, `pktmon` is busy with it: starting another pktmon capture
   stops ours.

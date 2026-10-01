@@ -87,9 +87,11 @@ files and buttons to open the folder or copy its path.
 
 - With **process only** checked, the file keeps the traffic of the selected process
   and its children, including connections opened after the recording started. The
-  selection is made by connection owner when the recording stops, so servers the game
-  connects to later are not lost. Packets that could not be matched to a connection
-  but go to an address the process talked to are kept without a label.
+  selection uses confirmed connection ownership retained throughout recording, so
+  servers the game connects to later and older connections evicted from the live
+  history are not lost. Packets with unknown or disputed ownership are excluded,
+  even when their IP or domain matches a known connection. To inspect those packets,
+  record the whole computer and use the unfiltered connection list.
 - Such a recording stops by itself 15 seconds after the process exits: start it, play
   and do not watch it.
 - Without the checkbox all traffic of the computer is recorded.
@@ -112,6 +114,12 @@ A `.json` file is saved next to the dump: the recording period, the process and 
 PIDs of its group, and every connection with its domain, PTR, ASN, owner and traffic.
 A week later it is still clear what was recorded, even if the process exited long
 before the recording was stopped.
+
+The recording button is disabled while a request or finalization is in progress.
+Capture or processing failures show an error instead of a successful save message.
+If process filtering fails, the original file remains unfiltered; the UI reports
+its path and the JSON map records `only_process: false`. Such a file may contain
+traffic from the whole host.
 
 ## Reports and export
 

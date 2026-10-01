@@ -50,6 +50,22 @@ full scan, because Proton starts new descendants while the game runs.
 **Windows.** Sockets come from `GetExtendedTcpTable` and `GetExtendedUdpTable` with the
 owner PID, processes from Toolhelp32.
 
+UDP ownership uses the local address, port and IP family, and the remote endpoint
+when the socket is connected. Wildcard binds (`0.0.0.0`, `::`) match only addresses
+of this computer, read from the network interfaces. A shared or unresolved endpoint
+is not assigned to an arbitrary process. Linux socket inodes and Windows UDP
+creation timestamps distinguish reused sockets; Windows falls back to PID tables
+when creation timestamps are unavailable.
+
+A new socket cannot claim packets from before its observed lifetime. If one
+connection tuple contains packets from different socket lifetimes, it remains
+unattributed rather than relabeling its whole history. Socket polling still cannot
+reliably identify sockets created and closed entirely between polls.
+
+For TCP, a changed inode or PID, or reopening an observed closed tuple, disputes
+the combined history. Counters remain, but the process identity and previous SNI
+are cleared. Such a tuple is excluded from process-scoped views and dumps.
+
 ## Packets
 
 On Linux `dumpcap` from Wireshark writes a pcapng stream to stdout, and SocketTrail
@@ -77,6 +93,11 @@ several packets and shuffles the frames, so the pieces are put together by offse
 each connection. With Encrypted Client Hello (ECH), in TLS and QUIC alike, only the
 outer SNI is visible: the provider's public name, for example `cloudflare-ech.com`.
 
+Noninitial IPv4 fragments are not parsed as TCP/UDP because they have no transport
+header. IP fragments are not reassembled, so counters for fragmented traffic can
+be incomplete. A whole-host dump retains all frames; a process dump excludes
+fragments whose ownership cannot be confirmed.
+
 ## Names and network owners
 
 Names come from SNI, DNS responses, PTR and labels for special addresses, in this order
@@ -96,15 +117,28 @@ A dump is a second `dumpcap` (or the PktMon stream on Windows) writing full pack
 a file. When the recording stops, SocketTrail rewrites the file once:
 
 1. With **process only**, packets of connections owned by the selected group are kept.
-   The owner is decided at this moment, from the whole history of the recording, so
-   connections opened after the start are included. Unmatched packets to addresses the
-   process talked to are kept too.
+   Confirmed ownership is retained during recording even when the live history
+   evicts an old connection. Connections opened after the start are included.
+   Unknown or disputed ownership is excluded: sharing an IP or CDN domain is not
+   evidence of belonging to the same process.
 2. Every packet gets a pcapng comment `process [pid] -> domain`, and the section header
    says what was recorded.
 3. A `.json` map is saved next to the file: the period, the process, its PIDs and every
    connection with names, owners and traffic.
 
 A process-only recording stops by itself 15 seconds after the process exits.
+
+Startup, recording and finalization are separate states. Repeat starts and operations
+during startup or finalization are rejected without changing the recording. On Linux,
+capture startup is confirmed by the pcapng stream or file header, and dumpcap exit
+and diagnostics are monitored. Windows checks ETW health and file write errors.
+File names remain unique even when recordings start in quick succession.
+
+Stop, processing and sidecar errors return `ok: false` and appear in the UI. If process
+filtering fails, the original capture is retained and explicitly reported as unfiltered.
+The JSON map distinguishes `requested_only_process` from the actual `only_process`;
+`processing` includes the processing status and whether capture ended cleanly
+(`capture_complete`).
 
 ## Local interface
 

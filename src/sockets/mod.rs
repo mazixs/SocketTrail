@@ -9,12 +9,12 @@ use std::net::IpAddr;
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "linux")]
-pub use linux::snapshot;
+pub use linux::{local_addresses, snapshot};
 
 #[cfg(windows)]
 mod windows;
 #[cfg(windows)]
-pub use windows::snapshot;
+pub use windows::{local_addresses, snapshot};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
 pub enum Proto {
@@ -41,6 +41,9 @@ pub struct SockEntry {
     pub state: &'static str,
     /// Владелец. На Linux известен только для PID из `scan_pids` снимка.
     pub pid: Option<i32>,
+    /// Идентичность сокета: inode на Linux, время создания UDP на Windows.
+    /// None, если платформа не предоставляет эту информацию.
+    pub cookie: Option<u64>,
 }
 
 /// Имя состояния UDP-сокета: без удаленного адреса он просто слушает порт.

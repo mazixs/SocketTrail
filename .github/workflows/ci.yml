@@ -46,6 +46,7 @@ jobs:
       - run: cargo test
       - run: cargo build --release
       - run: packaging/smoke.sh target/release/sockettrail
+      - run: python3 packaging/recording-smoke.py target/release/sockettrail
 
   # Quick check of the Windows code without Windows: mingw build and tests under Wine.
   test-wine:

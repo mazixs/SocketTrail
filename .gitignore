@@ -1,6 +1,7 @@
 /target
 .playwright-mcp/
 .playwright-cli/
+/output/playwright/
 
 # Tool output: reports and dumps
 *-network-report.html

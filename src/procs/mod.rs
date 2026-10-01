@@ -25,8 +25,7 @@ pub struct ProcInfo {
     pub proton: bool,
 }
 
-/// PID процесса и всех его потомков. Практика из разбора AION 2: сокеты игры
-/// висят на дочерних процессах (wineserver, GameThread), выбор одного PID теряет половину.
+/// PID процесса и всех его потомков, включая дочерние процессы Proton/Wine.
 pub fn descendants(procs: &[ProcInfo], root: i32) -> Vec<i32> {
     let mut children: HashMap<i32, Vec<i32>> = HashMap::new();
     for p in procs {

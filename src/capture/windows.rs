@@ -20,9 +20,20 @@ impl Live {
             "PktMon (ETW), все сетевые адаптеры"
         )
     }
+
+    pub fn check(&mut self) -> Result<(), Text> {
+        if crate::etw::is_active() {
+            Ok(())
+        } else {
+            Err(text!(
+                "Packet capture stopped",
+                "Пакетный захват остановился"
+            ))
+        }
+    }
 }
 
-pub fn start_live(_iface: &str, tx: UnboundedSender<Packet>) -> Result<Live, Text> {
+pub async fn start_live(_iface: &str, tx: UnboundedSender<Packet>) -> Result<Live, Text> {
     crate::etw::start(tx).map(|session| Live { _session: session })
 }
 
@@ -35,12 +46,19 @@ pub struct Dump {
 
 impl Dump {
     pub fn is_running(&self) -> bool {
-        self.recording
+        self.recording && crate::etw::dump_error().is_none()
     }
 
-    pub fn start(&mut self, _iface: &str, path: &str) -> std::io::Result<()> {
+    pub fn poll_error(&mut self) -> Option<String> {
+        self.recording.then(crate::etw::dump_error).flatten()
+    }
+
+    pub async fn start(&mut self, _iface: &str, path: &str) -> std::io::Result<()> {
         if self.recording {
-            return Ok(());
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                t!("Recording is already running", "Запись уже идет"),
+            ));
         }
         crate::etw::dump_start(path)?;
         self.recording = true;
@@ -49,14 +67,19 @@ impl Dump {
         Ok(())
     }
 
-    pub async fn stop(&mut self) -> Option<String> {
+    pub async fn stop(&mut self) -> std::io::Result<Option<String>> {
         if !self.recording {
-            return None;
+            return Ok(None);
         }
-        crate::etw::dump_stop();
+        let error = crate::etw::dump_error();
+        let result = crate::etw::dump_stop();
         self.recording = false;
         self.started_ms = None;
-        self.path.clone()
+        result?;
+        if let Some(e) = error {
+            return Err(std::io::Error::other(e));
+        }
+        Ok(self.path.clone())
     }
 }
 
@@ -71,10 +94,10 @@ mod tests {
             std::process::id()
         ));
         let mut dump = Dump::default();
-        assert!(dump.start("any", path.to_str().unwrap()).is_err());
+        assert!(dump.start("any", path.to_str().unwrap()).await.is_err());
         assert!(!dump.is_running());
         assert!(dump.path.is_none());
-        assert!(dump.stop().await.is_none());
+        assert!(dump.stop().await.unwrap().is_none());
         assert!(!path.exists());
     }
 }

@@ -36,6 +36,22 @@ cargo test
 packaging/smoke.sh target/release/sockettrail   # starts the binary and checks the API
 ```
 
+## Recording regression checks
+
+On Linux, after building, run `python3 packaging/recording-smoke.py target/release/sockettrail`.
+This replaces dumpcap with a synthetic source and captures no real traffic. It checks
+repeat starts, concurrent stop/start, repeat stops, filtering failure, capture exit and
+recording startup failure. Temporary files are removed afterwards. Linux CI runs it too.
+
+Regression checklist:
+
+- New starts are rejected until the previous dump has finished processing.
+- Repeat starts preserve the current path, period and recorded owners.
+- Reused TCP tuples do not relabel old counters with a new process.
+- Capture exit and recording failures are visible in the API and UI.
+- Filtering failure preserves the source and reports its actual scope.
+- Noninitial IPv4 fragments do not create invented connections.
+
 ## Windows
 
 Windows packaging checks that the exe uses the GUI subsystem and cannot create a

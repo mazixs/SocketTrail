@@ -322,7 +322,7 @@ const $ = s => document.querySelector(s);
 const ic = id => `<svg class="ic"><use href="#i-${id}"/></svg>`;
 const state = {
   selected:null, filter:'active', scope:'proc', view:'list',
-  showLocal:false, showSelf:false, dump:null, procs:[],
+  showLocal:false, showSelf:false, dump:null, dumpBusy:false, procs:[],
   collapsed:new Set(), opened:new Set(), lastRows:[], busy:false,
 };
 
@@ -378,7 +378,9 @@ const RU = {
   '{name} {pid}, group of {n}': '{name} {pid}, в группе {n}',
   'no process selected, showing the whole host': 'процесс не выбран, показан весь хост',
   'Packet capture unavailable, recording may not start': 'Пакетный захват недоступен, запись может не начаться',
-  'Stop': 'Остановить', 'Record dump': 'Собрать дамп',
+  'Stop': 'Остановить', 'Record dump': 'Собрать дамп', 'Please wait': 'Подождите',
+  'Recording could not be saved: {e}': 'Не удалось сохранить запись: {e}',
+  'Unfiltered traffic remains in {p}': 'Нефильтрованный трафик остался в {p}',
   'Dump saved: {p}': 'Дамп сохранен: {p}',
   '(the "Dumps" button in the header opens the folder)': '(кнопка "Дампы" в шапке открывает папку)',
   'connection map: {p}': 'карта соединений: {p}',
@@ -796,7 +798,8 @@ async function refresh(){
     if (state.autoSeen === undefined) state.autoSeen = auto;
     else if (auto && auto !== state.autoSeen){
       state.autoSeen = auto;
-      toast(t('Process exited, recording stopped: {p}', {p: `<span class="mono">${esc(auto)}</span>`}));
+      if (r.dump.result && !r.dump.result.ok) showDumpError(r.dump.result);
+      else toast(t('Process exited, recording stopped: {p}', {p: `<span class="mono">${esc(auto)}</span>`}));
       if ($('#dumps').style.display !== 'none') renderDumps();
     }
     // В сводке shown считает адреса, а matched - соединения: подписи разные,
@@ -859,7 +862,11 @@ async function refresh(){
 function renderDumpBtn(d){
   const b = $('#btn-dump');
   let html;
-  if (d && d.running){
+  b.disabled = state.dumpBusy || !!(d && d.busy);
+  if (d && d.busy){
+    html = ic('rec') + t('Please wait');
+    b.className = 'rec';
+  } else if (d && d.running){
     const s = d.started ? Math.max(0, Math.floor((Date.now() - d.started) / 1000)) : 0;
     const mmss = String(Math.floor(s / 60)).padStart(2, '0') + ':' + String(s % 60).padStart(2, '0');
     html = `<span class="rdot"></span>${t('Stop')}<span class="rtime">${mmss}</span>`;
@@ -909,23 +916,38 @@ function hardRefresh(){
   $('#rows').innerHTML = ''; rowIndex.clear(); refresh();
 }
 
+function showDumpError(r){
+  toast(t('Recording could not be saved: {e}', {e: esc(r.error || t('no connection to SocketTrail'))})
+    + (r.unfiltered && r.path ? '<br>' + t('Unfiltered traffic remains in {p}',
+      {p: `<span class="mono">${esc(r.path)}</span>`}) : ''), 'bad');
+}
+
 $('#btn-dump').onclick = async () => {
-  if (state.dump && state.dump.running){
-    const r = await api('/api/dump/stop', {method:'POST'}) || {};
-    toast(t('Dump saved: {p}', {p: `<span class="mono">${esc(r.path || '')}</span>`}) + `<br>${fmtBytes(r.size)}`
-      + ` <span class="dim">${t('(the "Dumps" button in the header opens the folder)')}</span>`
-      + (r.sidecar ? `<br><span class="dim">${t('connection map: {p}', {p: esc(r.sidecar)})}</span>` : ''));
-    if ($('#dumps').style.display !== 'none') renderDumps();
-  } else {
-    const r = await api('/api/dump/start', {method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({filtered: $('#onlyproc').checked && !!state.selected})})
-      || {ok:false, error:t('no connection to SocketTrail')};
-    toast(r.ok ? t('Recording to {p}', {p: `<span class="mono">${esc(r.path)}</span>`})
-        + (r.only ? `<br><span class="dim">${t('only {w} and its child processes, recording stops by itself after it exits', {w: esc(r.only)})}</span>` : '')
-      : t('Could not start recording: {e}', {e: esc(r.error || '')}), r.ok ? '' : 'bad');
+  if (state.dumpBusy || (state.dump && state.dump.busy)) return;
+  state.dumpBusy = true;
+  renderDumpBtn(state.dump);
+  try {
+    if (state.dump && state.dump.running){
+      const r = await api('/api/dump/stop', {method:'POST'});
+      if (!r || !r.ok) showDumpError(r || {});
+      else toast(t('Dump saved: {p}', {p: `<span class="mono">${esc(r.path || '')}</span>`}) + `<br>${fmtBytes(r.size)}`
+        + ` <span class="dim">${t('(the "Dumps" button in the header opens the folder)')}</span>`
+        + (r.sidecar ? `<br><span class="dim">${t('connection map: {p}', {p: esc(r.sidecar)})}</span>` : ''));
+      if ($('#dumps').style.display !== 'none') renderDumps();
+    } else {
+      const r = await api('/api/dump/start', {method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({filtered: $('#onlyproc').checked && !!state.selected})})
+        || {ok:false, error:t('no connection to SocketTrail')};
+      toast(r.ok ? t('Recording to {p}', {p: `<span class="mono">${esc(r.path)}</span>`})
+          + (r.only ? `<br><span class="dim">${t('only {w} and its child processes, recording stops by itself after it exits', {w: esc(r.only)})}</span>` : '')
+        : t('Could not start recording: {e}', {e: esc(r.error || '')}), r.ok ? '' : 'bad');
+    }
+  } finally {
+    state.dumpBusy = false;
+    renderDumpBtn(state.dump);
+    refresh();
   }
-  refresh();
 };
 
 $('#btn-copy').onclick = () => {

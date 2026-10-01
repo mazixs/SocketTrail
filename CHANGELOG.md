@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.2.3 - 2026-10-01
+
+- Recording: serialize start, stop and finalization; reject repeated starts without
+  changing the active recording, and use unique filenames for successive recordings.
+- Capture failures and dump write, flush or processing errors are reported by the
+  API and interface instead of a successful save message. Failed process filtering
+  preserves the original file and explicitly identifies its whole-host scope.
+- Connection ownership: match UDP sockets by local endpoint and socket lifetime;
+  shared or reused endpoints cannot claim another process's traffic. Reused TCP
+  tuples retain counters but clear disputed process identity and previous SNI.
+- Parsing: reject noninitial IPv4 fragments and truncated transport headers instead
+  of interpreting payload bytes as ports. IP fragment reassembly remains unsupported.
+- CI: add isolated recording lifecycle and failure regression checks.
+- Documentation: describe failure handling and ownership limits in English and
+  Russian; remove remaining session-specific examples and host measurements.
+
 ## v0.2.2 - 2026-09-30
 
 - Windows: the application uses the GUI subsystem. Normal launches and administrator
@@ -70,8 +86,7 @@
   (CSRF). Previously any page open in the browser could clear the history or start
   a dump.
 - Live parsing and dumps without a process filter no longer capture loopback, except
-  DNS. With heavy local traffic this cuts the load several times (measured: 34% + 32%
-  CPU for dumpcap -> 3% + 0%) and keeps the dump from growing to gigabytes.
+  DNS. This reduces parsing work and dump size when local traffic is heavy.
 - Dock icon on Wayland: the window opens at `/sockettrail`, its app_id is set in the
   shortcut, plus hidden shortcuts for other Chromium-based browsers.
 - .deb package: `make deb`.
@@ -81,7 +96,7 @@
   window.
 - Directories moved to `src/paths.rs`, window launch to `src/window.rs`, with
   groundwork for Windows.
-- README rewritten with screenshots of a real session; details moved to `docs/`
+- README reorganized around screenshots; details moved to `docs/`
   (usage, Windows, how it works, development) in English and Russian.
 
 ## v0.1.0 - 2026-09-20

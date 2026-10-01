@@ -113,6 +113,7 @@ impl Dedup {
 
 struct DumpWriter {
     out: BufWriter<std::fs::File>,
+    error: Option<String>,
 }
 
 struct Sink {
@@ -292,7 +293,9 @@ pub fn start(tx: UnboundedSender<Packet>) -> Result<Session, Text> {
 impl Drop for Session {
     fn drop(&mut self) {
         ACTIVE.store(false, Ordering::Release);
-        dump_stop();
+        if let Err(e) = dump_stop() {
+            eprintln!("[dump] {e}");
+        }
         let mut p = props();
         unsafe {
             ControlTraceW(
@@ -345,7 +348,11 @@ unsafe extern "system" fn on_event(ev: *mut EVENT_RECORD) {
                 && let Some(w) = d.as_mut()
             {
                 let iface = if linktype == 1 { 0 } else { 1 };
-                let _ = write_epb(&mut w.out, iface, h.TimeStamp, frame, orig);
+                if w.error.is_none()
+                    && let Err(e) = write_epb(&mut w.out, iface, h.TimeStamp, frame, orig)
+                {
+                    w.error = Some(e.to_string());
+                }
             }
             if let Some(p) = parsed {
                 let _ = sink.tx.send(p);
@@ -425,13 +432,9 @@ fn write_epb(
     block(out, 6, &b)
 }
 
-pub fn running() -> bool {
-    ACTIVE.load(Ordering::Acquire)
-}
-
 /// Запись дампа из уже идущего захвата.
 pub fn dump_start(path: &str) -> std::io::Result<()> {
-    if !running() {
+    if !is_active() {
         return Err(std::io::Error::other(t!(
             "capture is not running",
             "захват не запущен"
@@ -440,18 +443,47 @@ pub fn dump_start(path: &str) -> std::io::Result<()> {
     let sink = SINK
         .get()
         .ok_or_else(|| std::io::Error::other(t!("capture is not running", "захват не запущен")))?;
+    let mut dump = sink.dump.lock().unwrap();
+    if dump.is_some() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            t!("Recording is already running", "Запись уже идет"),
+        ));
+    }
     let mut out = BufWriter::with_capacity(1 << 20, std::fs::File::create(path)?);
     write_header(&mut out)?;
-    *sink.dump.lock().unwrap() = Some(DumpWriter { out });
+    out.flush()?;
+    *dump = Some(DumpWriter { out, error: None });
     Ok(())
 }
 
-pub fn dump_stop() {
+pub fn is_active() -> bool {
+    ACTIVE.load(Ordering::Acquire)
+}
+
+pub fn dump_error() -> Option<String> {
+    if !is_active() {
+        return Some(t!("Packet capture stopped", "Пакетный захват остановился"));
+    }
+    SINK.get().and_then(|s| {
+        s.dump
+            .lock()
+            .unwrap()
+            .as_ref()
+            .and_then(|w| w.error.clone())
+    })
+}
+
+pub fn dump_stop() -> std::io::Result<()> {
     if let Some(s) = SINK.get()
         && let Some(mut w) = s.dump.lock().unwrap().take()
     {
-        let _ = w.out.flush();
+        if let Some(e) = w.error {
+            return Err(std::io::Error::other(e));
+        }
+        w.out.flush()?;
     }
+    Ok(())
 }
 
 #[cfg(test)]

@@ -137,11 +137,18 @@ pub fn parse_link_with(
 }
 
 fn parse_ipv4(d: &[u8], quic: Option<&mut quic::Assembler>) -> Option<Packet> {
+    if d.first()? >> 4 != 4 || be16(d, 6)? & 0x1fff != 0 {
+        return None;
+    }
     let ihl = (d.first()? & 0x0F) as usize * 4;
     if ihl < 20 || d.len() < ihl {
         return None;
     }
     let total = be16(d, 2)? as u32;
+    if total < ihl as u32 {
+        return None;
+    }
+    let d = &d[..d.len().min(total as usize)];
     let proto = *d.get(9)?;
     let src = IpAddr::V4(Ipv4Addr::new(d[12], d[13], d[14], d[15]));
     let dst = IpAddr::V4(Ipv4Addr::new(d[16], d[17], d[18], d[19]));
@@ -174,6 +181,9 @@ fn parse_l4(
     let (p, sport, dport, payload) = match proto {
         6 => {
             let off = ((*d.get(12)? >> 4) as usize) * 4;
+            if off < 20 || d.len() < off {
+                return None;
+            }
             (
                 Proto::Tcp,
                 be16(d, 0)?,
@@ -181,12 +191,12 @@ fn parse_l4(
                 d.get(off..).unwrap_or(&[]),
             )
         }
-        17 => (
-            Proto::Udp,
-            be16(d, 0)?,
-            be16(d, 2)?,
-            d.get(8..).unwrap_or(&[]),
-        ),
+        17 => {
+            if be16(d, 4)? < 8 || d.len() < 8 {
+                return None;
+            }
+            (Proto::Udp, be16(d, 0)?, be16(d, 2)?, &d[8..])
+        }
         _ => return None,
     };
 
@@ -217,8 +227,7 @@ fn parse_l4(
     Some(pkt)
 }
 
-/// SNI из TLS ClientHello. Единственный источник имени, когда у адреса нет ни PTR,
-/// ни DNS-записи - так был опознан шард lime-frankfurt-p4-api.plaync.com.
+/// SNI из TLS ClientHello позволяет узнать имя соединения без PTR и DNS-ответа.
 fn parse_sni(d: &[u8]) -> Option<String> {
     if *d.first()? != 0x16 || *d.get(1)? != 0x03 {
         return None;
@@ -292,8 +301,7 @@ fn dns_name(d: &[u8], mut p: usize) -> Option<(String, usize)> {
     Some((out, after))
 }
 
-/// Разбор DNS-ответа: A, AAAA и цепочки CNAME - именно они связывают
-/// вежливое имя вроде assets.playnccdn.com с реальным узлом CDN.
+/// Разбор DNS-ответа: A, AAAA и цепочки CNAME связывают имя с адресом узла.
 fn parse_dns(d: &[u8], pkt: &mut Packet) {
     if d.len() < 12 {
         return;
@@ -350,5 +358,58 @@ fn parse_dns(d: &[u8], pkt: &mut Packet) {
             _ => {}
         }
         p += 10 + rdlen;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn udp_fragment(offset: u16) -> Vec<u8> {
+        let mut f = vec![0u8; 28];
+        f[0] = 0x45;
+        f[2..4].copy_from_slice(&28u16.to_be_bytes());
+        f[6..8].copy_from_slice(&offset.to_be_bytes());
+        f[9] = 17;
+        f[12..16].copy_from_slice(&[192, 0, 2, 10]);
+        f[16..20].copy_from_slice(&[198, 51, 100, 20]);
+        f[20..28].copy_from_slice(&[0x9c, 0x40, 0x01, 0xbb, 0, 16, 0, 0]);
+        f
+    }
+
+    #[test]
+    fn noninitial_ipv4_fragments_do_not_invent_ports() {
+        for offset in [1, 0x2001, 0x1fff] {
+            assert!(parse_link(101, &udp_fragment(offset)).is_none());
+        }
+    }
+
+    #[test]
+    fn first_ipv4_fragment_still_has_transport_ports() {
+        for offset in [0, 0x2000, 0x4000] {
+            let p = parse_link(101, &udp_fragment(offset)).unwrap();
+            assert_eq!((p.sport, p.dport, p.bytes), (40000, 443, 28));
+        }
+    }
+
+    #[test]
+    fn ipv4_padding_cannot_supply_a_missing_transport_header() {
+        let mut f = udp_fragment(0);
+        f[2..4].copy_from_slice(&20u16.to_be_bytes());
+        assert!(parse_link(101, &f).is_none());
+    }
+
+    #[test]
+    fn malformed_and_truncated_ipv4_headers_are_rejected() {
+        let f = udp_fragment(0);
+        for n in 0..28 {
+            assert!(parse_link(101, &f[..n]).is_none());
+        }
+        let mut short = f.clone();
+        short[2..4].copy_from_slice(&16u16.to_be_bytes());
+        assert!(parse_link(101, &short).is_none());
+        let mut other = f;
+        other[0] = 0x65;
+        assert!(parse_link(101, &other).is_none());
     }
 }

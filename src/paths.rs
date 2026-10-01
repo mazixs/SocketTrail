@@ -36,3 +36,28 @@ pub fn dumps_dir() -> PathBuf {
         .unwrap_or_else(std::env::temp_dir)
         .join("SocketTrail")
 }
+
+#[cfg(test)]
+pub struct TestDir(pub PathBuf);
+
+#[cfg(test)]
+impl TestDir {
+    pub fn new(label: &str) -> Self {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let p = std::env::temp_dir().join(format!(
+            "sockettrail-{label}-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir(&p).unwrap();
+        Self(p)
+    }
+}
+
+#[cfg(test)]
+impl Drop for TestDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}

@@ -1,15 +1,5 @@
-//! Опознание владельца адреса. PTR и ASN расходятся гораздо чаще, чем кажется:
-//! сеть 193.202.112.0/24 по RDAP записана на ирландского хостера, а анонсирует
-//! ее AS13335 Cloudflare. Поэтому показываем оба источника, а не один.
-//!
-//! Спрашиваем через resolvectl, а dig оставлен запасным путем. Разница не
-//! косметическая: systemd-resolved держит DNS отдельно на каждом сетевом
-//! интерфейсе, и обратные зоны провайдера видны только через него. Один и тот
-//! же адрес dig отдавал то с именем, то без - отсюда и брались соседние строки
-//! таблицы, где у одних адресов домен есть, а у других нет:
-//!
-//!   $ dig +short -x 192.0.2.35              -> пусто
-//!   $ resolvectl query 192.0.2.35           -> 192-0-2-35.dynamic.example-isp.net
+//! PTR и ASN могут указывать на разные организации, поэтому сохраняем оба источника.
+//! На Linux сначала используем resolvectl с учетом DNS каждого интерфейса, затем dig.
 
 use std::net::IpAddr;
 
@@ -109,7 +99,7 @@ async fn ptr_resolvectl(ip: &IpAddr) -> Answer {
 }
 
 #[cfg(not(windows))]
-/// TXT через resolvectl: `name IN TXT "13335 | 104.16.0.0/12 | US | arin | ..."`
+/// TXT через resolvectl: `name IN TXT "64500 | 192.0.2.0/24 | US | arin | ..."`
 async fn txt_resolvectl(name: &str) -> Answer {
     let Some((out, err, _)) =
         run("resolvectl", &["query", "--legend=no", "--type=TXT", name]).await
@@ -338,7 +328,7 @@ pub async fn lookup(ip: IpAddr) -> Whois {
     }
 
     if let Some(rev) = reverse_name(&ip) {
-        // Ответ вида: "13335 | 193.202.112.0/24 | US | arin | 2010-07-30"
+        // Пример формата: "64500 | 192.0.2.0/24 | US | arin | 2000-01-01"
         match txt(&format!("{rev}.origin.asn.cymru.com")).await {
             Answer::Ok(line) => {
                 let num = line
@@ -348,7 +338,7 @@ pub async fn lookup(ip: IpAddr) -> Whois {
                     .filter(|a| !a.is_empty() && a.chars().all(|c| c.is_ascii_digit()));
                 if let Some(a) = num {
                     w.asn = Some(format!("AS{a}"));
-                    // Название сети: "13335 | US | arin | 2010-07-14 | CLOUDFLARENET - Cloudflare, Inc."
+                    // Пример названия сети: "64500 | US | arin | 2000-01-01 | EXAMPLE - Example network"
                     match txt(&format!("AS{a}.asn.cymru.com")).await {
                         Answer::Ok(line) => {
                             w.owner = line

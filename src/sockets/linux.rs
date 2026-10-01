@@ -3,7 +3,7 @@
 //! Замена `ss -tunp` в цикле: без форка на каждый опрос, поэтому интервал
 //! можно держать в районе 200 мс и ловить короткоживущие соединения.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
@@ -88,10 +88,47 @@ fn parse_table(path: &str, proto: Proto, out: &mut Vec<(SockEntry, u64)>) {
                 rport,
                 state,
                 pid: None,
+                cookie: (inode != 0).then_some(inode),
             },
             inode,
         ));
     }
+}
+
+/// Адреса интерфейсов нужны и для UDP, привязанного к 0.0.0.0 или ::.
+/// Таблица сокетов сама по себе не перечисляет все адреса компьютера.
+pub fn local_addresses() -> Option<HashSet<IpAddr>> {
+    let mut head = std::ptr::null_mut();
+    // SAFETY: getifaddrs создает список, освобождаемый freeifaddrs ровно один раз.
+    if unsafe { libc::getifaddrs(&mut head) } != 0 {
+        return None;
+    }
+    let mut ips = HashSet::new();
+    let mut cur = head;
+    // SAFETY: узлы и sockaddr действительны до freeifaddrs; семейство проверяем
+    // перед приведением указателя к sockaddr_in или sockaddr_in6.
+    unsafe {
+        while let Some(entry) = cur.as_ref() {
+            if !entry.ifa_addr.is_null() {
+                match (*entry.ifa_addr).sa_family as i32 {
+                    libc::AF_INET => {
+                        let addr = &*entry.ifa_addr.cast::<libc::sockaddr_in>();
+                        ips.insert(IpAddr::V4(Ipv4Addr::from(
+                            addr.sin_addr.s_addr.to_ne_bytes(),
+                        )));
+                    }
+                    libc::AF_INET6 => {
+                        let addr = &*entry.ifa_addr.cast::<libc::sockaddr_in6>();
+                        ips.insert(IpAddr::V6(Ipv6Addr::from(addr.sin6_addr.s6_addr)));
+                    }
+                    _ => {}
+                }
+            }
+            cur = entry.ifa_next;
+        }
+        libc::freeifaddrs(head);
+    }
+    Some(ips)
 }
 
 /// Владелец ищется только среди `scan_pids`: обход /proc/<pid>/fd всех процессов
@@ -145,4 +182,31 @@ fn inode_owners(pids: &[i32]) -> HashMap<u64, i32> {
 /// иначе соединения игры уходят к wineserver, если его PID больше.
 fn is_wineserver(pid: i32) -> bool {
     fs::read_to_string(format!("/proc/{pid}/comm")).is_ok_and(|c| c.trim_end() == "wineserver")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::UdpSocket;
+
+    #[test]
+    fn interface_addresses_include_loopback_without_socket_connections() {
+        let ips = local_addresses().unwrap();
+        assert!(ips.contains(&IpAddr::V4(Ipv4Addr::LOCALHOST)));
+        assert!(!ips.contains(&IpAddr::V4(Ipv4Addr::UNSPECIFIED)));
+    }
+
+    #[test]
+    fn udp_snapshot_has_own_pid_and_inode() {
+        let udp = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let addr = udp.local_addr().unwrap();
+        let pid = std::process::id() as i32;
+        let socks = snapshot(&[pid]);
+        let s = socks
+            .iter()
+            .find(|s| s.proto == Proto::Udp && s.local == addr.ip() && s.lport == addr.port())
+            .unwrap();
+        assert_eq!(s.pid, Some(pid));
+        assert!(s.cookie.is_some_and(|inode| inode != 0));
+    }
 }

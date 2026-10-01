@@ -605,12 +605,13 @@ dependencies = [
 
 [[package]]
 name = "sockettrail"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "aes-gcm",
  "axum",
  "futures-util",
  "hkdf",
+ "libc",
  "serde",
  "serde_json",
  "sha2",

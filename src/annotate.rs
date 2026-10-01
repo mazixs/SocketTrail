@@ -3,10 +3,9 @@
 //! выбранного процесса. Отбор идет по владельцу соединения, а не по адресам на
 //! момент старта, поэтому серверы, к которым игра подключилась позже, не теряются.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Read, Write};
-use std::net::IpAddr;
 
 use crate::pcap;
 use crate::state::ConnKey;
@@ -18,8 +17,6 @@ pub struct Owner {
 
 pub struct Plan {
     pub owners: HashMap<ConnKey, Owner>,
-    /// Адреса процесса: для пакетов, чьих соединений нет в истории.
-    pub hosts: HashSet<IpAddr>,
     /// false - весь трафик, true - только соединения процесса.
     pub only_group: bool,
     pub comment: String,
@@ -100,10 +97,7 @@ impl Plan {
         };
         match self.lookup(&p) {
             Some(o) => (!self.only_group || o.keep, o.label.as_deref()),
-            None => (
-                !self.only_group || self.hosts.contains(&p.src) || self.hosts.contains(&p.dst),
-                None,
-            ),
+            None => (!self.only_group, None),
         }
     }
 
@@ -112,6 +106,7 @@ impl Plan {
         let mut w = BufWriter::with_capacity(1 << 20, dst);
         let mut st = Stats::default();
         let mut linktypes: Vec<u16> = Vec::new();
+        let mut saw_header = false;
         let mut head = [0u8; 8];
         let mut body = Vec::new();
         loop {
@@ -144,6 +139,7 @@ impl Plan {
                             "pcapng с обратным порядком байт"
                         )));
                     }
+                    saw_header = true;
                     linktypes.clear();
                     write_block(&mut w, ty, &with_comment(&body, 16, &self.comment))?;
                 }
@@ -180,6 +176,12 @@ impl Plan {
                 _ => write_block(&mut w, ty, &body)?,
             }
         }
+        if !saw_header {
+            return Err(std::io::Error::other(t!(
+                "pcapng section header is missing",
+                "В pcapng отсутствует заголовок секции"
+            )));
+        }
         w.flush()?;
         Ok(st)
     }
@@ -187,18 +189,23 @@ impl Plan {
     /// Переписать файл на месте. При ошибке исходный дамп остается как был.
     pub fn rewrite(&self, path: &str) -> std::io::Result<Stats> {
         let tmp = format!("{path}.part");
-        let res = File::open(path)
-            .and_then(|src| Ok((src, File::create(&tmp)?)))
-            .and_then(|(src, dst)| self.apply(src, dst));
+        let src = File::open(path)?;
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let dst = options.open(&tmp)?;
+        let res = (|| {
+            dst.set_permissions(src.metadata()?.permissions())?;
+            let stats = self.apply(src, dst)?;
+            std::fs::rename(&tmp, path)?;
+            Ok(stats)
+        })();
         match res {
-            Ok(st) => {
-                // в дампе полный трафик: права исходного файла (у dumpcap 0600) сохраняем
-                if let Ok(meta) = std::fs::metadata(path) {
-                    let _ = std::fs::set_permissions(&tmp, meta.permissions());
-                }
-                std::fs::rename(&tmp, path)?;
-                Ok(st)
-            }
+            Ok(st) => Ok(st),
             Err(e) => {
                 let _ = std::fs::remove_file(&tmp);
                 Err(e)
@@ -227,7 +234,7 @@ pub fn label(pname: Option<&str>, pid: Option<i32>, domain: Option<&str>) -> Opt
 mod tests {
     use super::*;
     use crate::sockets::Proto;
-    use std::net::Ipv4Addr;
+    use std::net::{IpAddr, Ipv4Addr};
 
     fn udp_frame(src: [u8; 4], sport: u16, dst: [u8; 4], dport: u16) -> Vec<u8> {
         let mut f = vec![0u8; 12];
@@ -266,7 +273,9 @@ mod tests {
         let game = udp_frame(me, 40000, [1, 2, 3, 4], 27015);
         let reply = udp_frame([1, 2, 3, 4], 27015, me, 40000);
         let other = udp_frame(me, 40001, [5, 6, 7, 8], 443);
-        let src = file(&[game, reply, other]);
+        // Общий сервер/CDN не дает неизвестному соединению владельца игры.
+        let same_host = udp_frame(me, 40002, [1, 2, 3, 4], 27015);
+        let src = file(&[game, reply, other, same_host]);
 
         let key = ConnKey {
             proto: Proto::Udp,
@@ -283,14 +292,13 @@ mod tests {
                     keep: true,
                 },
             )]),
-            hosts: HashSet::new(),
             only_group: true,
             comment: "SocketTrail".into(),
         };
 
         let mut out = Vec::new();
         let st = plan.apply(&src[..], &mut out).unwrap();
-        assert_eq!((st.packets, st.kept, st.labeled), (3, 2, 2));
+        assert_eq!((st.packets, st.kept, st.labeled), (4, 2, 2));
         let text = String::from_utf8_lossy(&out);
         assert!(text.contains("cs2.exe [1234] -> valve.net"));
 
@@ -301,6 +309,58 @@ mod tests {
         plan.only_group = false;
         let mut all = Vec::new();
         let st = plan.apply(&src[..], &mut all).unwrap();
-        assert_eq!((st.kept, st.labeled), (3, 2));
+        assert_eq!((st.kept, st.labeled), (4, 2));
+    }
+
+    #[test]
+    fn empty_capture_is_not_a_successful_rewrite() {
+        let dir = crate::paths::TestDir::new("empty-capture");
+        let path = dir.0.join("demo.pcapng");
+        std::fs::write(&path, []).unwrap();
+        let plan = Plan {
+            owners: HashMap::new(),
+            only_group: true,
+            comment: "demo".into(),
+        };
+        assert!(plan.rewrite(path.to_str().unwrap()).is_err());
+        assert_eq!(std::fs::read(path).unwrap(), Vec::<u8>::new());
+    }
+
+    #[test]
+    fn existing_temporary_file_is_never_overwritten_or_deleted() {
+        let dir = crate::paths::TestDir::new("existing-part");
+        let path = dir.0.join("demo.pcapng");
+        let part = dir.0.join("demo.pcapng.part");
+        let data = file(&[]);
+        std::fs::write(&path, &data).unwrap();
+        std::fs::write(&part, b"previous attempt").unwrap();
+        let plan = Plan {
+            owners: HashMap::new(),
+            only_group: false,
+            comment: "demo".into(),
+        };
+        assert!(plan.rewrite(path.to_str().unwrap()).is_err());
+        assert_eq!(std::fs::read(path).unwrap(), data);
+        assert_eq!(std::fs::read(part).unwrap(), b"previous attempt");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rewriting_keeps_private_capture_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = crate::paths::TestDir::new("capture-permissions");
+        let path = dir.0.join("demo.pcapng");
+        std::fs::write(&path, file(&[])).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let plan = Plan {
+            owners: HashMap::new(),
+            only_group: false,
+            comment: "demo".into(),
+        };
+        plan.rewrite(path.to_str().unwrap()).unwrap();
+        assert_eq!(
+            std::fs::metadata(path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
     }
 }
