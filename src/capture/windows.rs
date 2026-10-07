@@ -1,8 +1,7 @@
 //! Собственный движок Windows: пакеты из ETW, разбор и запись pcapng внутри SocketTrail.
 
+use crate::capture::PacketSender;
 use crate::i18n::Text;
-use crate::pcap::Packet;
-use tokio::sync::mpsc::UnboundedSender;
 
 pub struct Live {
     // Сессия должна жить до завершения приложения.
@@ -33,7 +32,7 @@ impl Live {
     }
 }
 
-pub async fn start_live(_iface: &str, tx: UnboundedSender<Packet>) -> Result<Live, Text> {
+pub async fn start_live(_iface: &str, tx: PacketSender) -> Result<Live, Text> {
     crate::etw::start(tx).map(|session| Live { _session: session })
 }
 
@@ -60,7 +59,10 @@ impl Dump {
                 t!("Recording is already running", "Запись уже идет"),
             ));
         }
-        crate::etw::dump_start(path)?;
+        let file = path.to_string();
+        tokio::task::spawn_blocking(move || crate::etw::dump_start(&file))
+            .await
+            .map_err(std::io::Error::other)??;
         self.recording = true;
         self.path = Some(path.to_string());
         self.started_ms = Some(crate::state::now_ms());
@@ -72,7 +74,9 @@ impl Dump {
             return Ok(None);
         }
         let error = crate::etw::dump_error();
-        let result = crate::etw::dump_stop();
+        let result = tokio::task::spawn_blocking(crate::etw::dump_stop)
+            .await
+            .map_err(std::io::Error::other)?;
         self.recording = false;
         self.started_ms = None;
         result?;

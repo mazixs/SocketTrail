@@ -161,10 +161,14 @@ pub fn open_default(target: &str) -> bool {
         c.arg(target);
         c
     };
-    cmd.stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .is_ok()
+    match cmd.stdout(Stdio::null()).stderr(Stdio::null()).spawn() {
+        Ok(mut child) => {
+            // Без wait завершившийся обработчик висел бы зомби до выхода программы.
+            std::thread::spawn(move || child.wait());
+            true
+        }
+        Err(_) => false,
+    }
 }
 
 /// Отслеживание окна. Запущенный процесс ждать нельзя: Chrome, запущенный из

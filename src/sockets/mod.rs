@@ -41,6 +41,8 @@ pub struct SockEntry {
     pub state: &'static str,
     /// Владелец. На Linux известен только для PID из `scan_pids` снимка.
     pub pid: Option<i32>,
+    /// Сокет подтвержденно разделяют несколько процессов.
+    pub ambiguous: bool,
     /// Идентичность сокета: inode на Linux, время создания UDP на Windows.
     /// None, если платформа не предоставляет эту информацию.
     pub cookie: Option<u64>,

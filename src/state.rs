@@ -1,6 +1,6 @@
 //! Ядро состояния: история соединений, привязка к процессам, имена и счетчики.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -25,6 +25,28 @@ pub struct ConnKey {
     pub rport: u16,
 }
 
+/// DNS остается предположением об IP, а не доказательством имени потока.
+#[derive(Clone, Default, Serialize, Deserialize)]
+pub struct DnsEntry {
+    pub names: Vec<DnsName>,
+    pub overflow_until: u64,
+}
+#[derive(Clone, Serialize, Deserialize)]
+pub struct DnsName {
+    pub name: String,
+    pub expires: u64,
+}
+impl DnsEntry {
+    fn unique(&self, now: u64) -> Option<&String> {
+        if self.overflow_until > now {
+            return None;
+        }
+        let mut valid = self.names.iter().filter(|n| n.expires > now);
+        let first = valid.next()?;
+        valid.next().is_none().then_some(&first.name)
+    }
+}
+
 /// Куда ведет соединение. Различать важно: к 127.0.0.53 домена не будет никогда,
 /// это сам системный резолвер, а не удаленный узел.
 pub fn classify(ip: &IpAddr) -> &'static str {
@@ -37,7 +59,14 @@ pub fn classify(ip: &IpAddr) -> &'static str {
                 "broadcast"
             } else if v4.is_multicast() {
                 "multicast"
-            } else if v4.is_private() || v4.is_link_local() {
+            } else if v4.is_private()
+                || v4.is_link_local()
+                || o[0] == 0
+                || o[0] >= 240
+                || (o[0] == 100 && o[1] & 0xc0 == 64)
+            {
+                // 100.64.0.0/10 - CGNAT и Tailscale, 0/8 и 240/4 зарезервированы:
+                // whois и PTR по ним раскрыли бы внешнему DNS адреса своей сети.
                 "private"
             } else {
                 "public"
@@ -48,8 +77,9 @@ pub fn classify(ip: &IpAddr) -> &'static str {
                 "loopback"
             } else if v6.is_multicast() {
                 "multicast"
-            } else if (v6.segments()[0] & 0xfe00) == 0xfc00 || (v6.segments()[0] & 0xffc0) == 0xfe80
+            } else if (v6.segments()[0] & 0xfe00) == 0xfc00 || (v6.segments()[0] & 0xff80) == 0xfe80
             {
+                // fc00::/7, а также fe80::/10 и устаревшие site-local fec0::/10
                 "private"
             } else {
                 "public"
@@ -88,6 +118,8 @@ pub struct Conn {
     pub rport: u16,
     pub state: String,
     pub pid: Option<i32>,
+    #[serde(skip)]
+    pub owner_started: Option<u64>,
     pub pname: Option<String>,
     /// Лучшее известное имя: SNI приоритетнее DNS, DNS приоритетнее PTR.
     pub domain: Option<String>,
@@ -127,11 +159,13 @@ impl Conn {
             || current.owner_ambiguous
             || (self.first_seen != current.first_seen && !same_udp_socket)
             || (self.pid.is_some() && self.pid != current.pid)
+            || (self.owner_started.is_some() && self.owner_started != current.owner_started)
             || (self.udp_generation.is_some() && self.udp_generation != current.udp_generation);
         *self = current.clone();
         if ambiguous {
             self.owner_ambiguous = true;
             self.pid = None;
+            self.owner_started = None;
             self.pname = None;
         }
     }
@@ -140,6 +174,7 @@ impl Conn {
 #[derive(Clone)]
 struct UdpSocket {
     entry: SockEntry,
+    owner_started: Option<u64>,
     generation: u64,
     since: u64,
 }
@@ -149,6 +184,7 @@ struct UdpOwner {
     generation: u64,
     since: u64,
     pid: Option<i32>,
+    started: Option<u64>,
 }
 
 #[derive(Clone, Copy)]
@@ -163,12 +199,18 @@ enum UdpMatch {
 /// каждого прохода по таблице.
 pub const MAX_CONNS: usize = 20_000;
 
+/// Потолок карты имен: на Windows ее каждые 3 с пополняет DNS-кеш системы,
+/// при захвате - каждый DNS-ответ, включая mDNS от соседей по сети.
+pub const MAX_NAMES: usize = 20_000;
+
+/// TCP, замеченное только в пакетах, закрывается после такой тишины: таблица
+/// сокетов его не покажет, а без отметки оно навсегда осталось бы живым.
+const PACKET_ONLY_IDLE_MS: u64 = 60_000;
+
 pub struct Store {
     pub conns: HashMap<ConnKey, Conn>,
-    /// IP -> имя из DNS-ответов
-    pub dns: HashMap<IpAddr, String>,
-    /// имя -> каноническое имя
-    pub cnames: HashMap<String, String>,
+    /// IP -> имя из DNS-ответов, пополняется через remember_name
+    pub dns: HashMap<IpAddr, DnsEntry>,
     /// локальные адреса хоста, чтобы понимать направление пакета
     pub local_ips: HashSet<IpAddr>,
     pub packets_seen: u64,
@@ -182,13 +224,32 @@ impl Default for Store {
         Self {
             conns: HashMap::new(),
             dns: HashMap::new(),
-            cnames: HashMap::new(),
             local_ips: HashSet::new(),
             packets_seen: 0,
             udp_sockets: HashMap::new(),
             socket_generation: 0,
             sockets_at: now_ms(),
         }
+    }
+}
+
+/// Сокращает карту до 90% лимита за счет адресов, которых нет в истории
+/// соединений. Адреса из истории остаются: whois запросил бы их снова,
+/// а их число и так ограничено MAX_CONNS.
+pub fn trim_ip_map<V>(map: &mut HashMap<IpAddr, V>, conns: &HashMap<ConnKey, Conn>, limit: usize) {
+    let excess = map.len().saturating_sub(limit * 9 / 10);
+    if excess == 0 {
+        return;
+    }
+    let used: HashSet<IpAddr> = conns.keys().map(|k| k.remote).collect();
+    let unused: Vec<IpAddr> = map
+        .keys()
+        .filter(|ip| !used.contains(ip))
+        .take(excess)
+        .copied()
+        .collect();
+    for ip in unused {
+        map.remove(&ip);
     }
 }
 
@@ -213,7 +274,12 @@ impl Store {
         }
     }
 
-    fn refresh_udp_sockets(&mut self, socks: &[SockEntry], t: u64) {
+    fn refresh_udp_sockets(
+        &mut self,
+        socks: &[SockEntry],
+        procs: &HashMap<i32, &ProcInfo>,
+        t: u64,
+    ) {
         let mut previous = std::mem::take(&mut self.udp_sockets);
         for s in socks.iter().filter(|s| s.proto == Proto::Udp) {
             let old = previous.get_mut(&s.lport).and_then(|entries| {
@@ -223,6 +289,10 @@ impl Store {
                         && e.remote == s.remote
                         && e.rport == s.rport
                         && e.cookie == s.cookie
+                        && old
+                            .owner_started
+                            .zip(s.pid.and_then(|p| procs.get(&p).map(|p| p.started)))
+                            .is_none_or(|(a, b)| a == b)
                         && (s.pid.is_none() || e.pid.is_none() || e.pid == s.pid)
                 })?;
                 Some(entries.swap_remove(pos))
@@ -232,14 +302,20 @@ impl Store {
                     // При частичном обходе PID неизвестен, но inode тот же:
                     // проверенную привязку этого сокета сохраняем до его исчезновения.
                     let pid = s.pid.or(old.entry.pid);
+                    let ambiguous = s.ambiguous || old.entry.ambiguous;
                     old.entry = s.clone();
-                    old.entry.pid = pid;
+                    old.entry.ambiguous = ambiguous;
+                    old.entry.pid = if ambiguous { None } else { pid };
+                    old.owner_started = pid
+                        .and_then(|p| procs.get(&p).map(|p| p.started))
+                        .or(old.owner_started);
                     old
                 }
                 None => {
                     self.socket_generation += 1;
                     UdpSocket {
                         entry: s.clone(),
+                        owner_started: s.pid.and_then(|p| procs.get(&p).map(|p| p.started)),
                         generation: self.socket_generation,
                         // Можно привязать пакет из последнего интервала опроса,
                         // но не старую историю, накопленную до появления сокета.
@@ -268,17 +344,18 @@ impl Store {
         let Some(s) = matching.next() else {
             return UdpMatch::Missing;
         };
-        if matching.next().is_some() {
+        if s.entry.ambiguous || matching.next().is_some() {
             return UdpMatch::Ambiguous;
         }
         UdpMatch::Unique(UdpOwner {
             generation: s.generation,
             since: s.since,
             pid: s.entry.pid,
+            started: s.owner_started,
         })
     }
 
-    fn attribute_udp(c: &mut Conn, owner: UdpMatch, procs: Option<&HashMap<i32, ProcInfo>>) {
+    fn attribute_udp(c: &mut Conn, owner: UdpMatch, procs: Option<&HashMap<i32, &ProcInfo>>) {
         if c.owner_ambiguous {
             return;
         }
@@ -290,6 +367,7 @@ impl Store {
                 c.udp_generation = Some(o.generation);
                 if let Some(pid) = o.pid {
                     c.pid = Some(pid);
+                    c.owner_started = o.started.or(c.owner_started);
                     if let Some(procs) = procs {
                         c.pname = procs.get(&pid).map(|p| p.name.clone());
                     }
@@ -299,6 +377,7 @@ impl Store {
             _ => {
                 c.owner_ambiguous = true;
                 c.pid = None;
+                c.owner_started = None;
                 c.pname = None;
             }
         }
@@ -348,6 +427,7 @@ impl Store {
             rport: k.rport,
             state: "NEW".into(),
             pid: None,
+            owner_started: None,
             pname: None,
             domain: None,
             sni: None,
@@ -370,7 +450,7 @@ impl Store {
     }
 
     /// Применение снимка сокетов: обновляет состояние и владельца.
-    pub fn apply_sockets(&mut self, socks: &[SockEntry], procs: &HashMap<i32, ProcInfo>) {
+    pub fn apply_sockets(&mut self, socks: &[SockEntry], procs: &HashMap<i32, &ProcInfo>) {
         let t = now_ms();
         let mut alive: HashSet<ConnKey> = HashSet::with_capacity(socks.len());
         for s in socks {
@@ -378,7 +458,7 @@ impl Store {
                 self.local_ips.insert(s.local);
             }
         }
-        self.refresh_udp_sockets(socks, t);
+        self.refresh_udp_sockets(socks, procs, t);
         for s in socks {
             if s.rport == 0 {
                 continue;
@@ -398,11 +478,16 @@ impl Store {
             alive.insert(k);
             let pid = s.pid;
             let pname = pid.and_then(|p| procs.get(&p)).map(|p| p.name.clone());
+            let owner_started = pid.and_then(|p| procs.get(&p)).map(|p| p.started);
             let udp_owner = self.udp_owner(&k);
             let c = self.entry(k, false);
             let terminal = matches!(s.state, "TIME_WAIT" | "CLOSE" | "DELETE_TCB");
             if s.proto == Proto::Tcp {
                 let reused = c.pid.zip(pid).is_some_and(|(old, new)| old != new)
+                    || c.owner_started
+                        .zip(owner_started)
+                        .is_some_and(|(old, new)| old != new)
+                    || s.ambiguous
                     || c.tcp_cookie
                         .zip(s.cookie)
                         .is_some_and(|(old, new)| old != new)
@@ -410,6 +495,7 @@ impl Store {
                 if reused {
                     c.owner_ambiguous = true;
                     c.pid = None;
+                    c.owner_started = None;
                     c.pname = None;
                     c.sni = None;
                     c.domain = None;
@@ -424,6 +510,7 @@ impl Store {
                 Self::attribute_udp(c, udp_owner, Some(procs));
             } else if pid.is_some() && !c.owner_ambiguous {
                 c.pid = pid;
+                c.owner_started = owner_started.or(c.owner_started);
                 c.pname = pname;
             }
         }
@@ -447,12 +534,70 @@ impl Store {
                 }
                 continue;
             }
-            if !c.closed && c.state != "NEW" && !alive.contains(&k) {
+            if c.closed || alive.contains(&k) {
+                continue;
+            }
+            if c.state != "NEW" {
                 c.closed = true;
                 if c.state != "TIME_WAIT" {
                     c.state = "CLOSED".into();
                 }
+            } else if t.saturating_sub(c.last_seen) > PACKET_ONLY_IDLE_MS {
+                c.closed = true;
+                c.state = "CLOSED".into();
             }
+        }
+    }
+
+    pub fn restore_dns(&mut self, ip: IpAddr, mut names: DnsEntry) -> bool {
+        let now = now_ms();
+        names
+            .names
+            .retain(|n| n.expires > now && !n.name.is_empty() && n.name.len() <= 253);
+        if names.names.len() > 8 {
+            names.overflow_until = names.overflow_until.max(
+                names.names[8..]
+                    .iter()
+                    .map(|n| n.expires)
+                    .max()
+                    .unwrap_or(0),
+            );
+            names.names.truncate(8);
+        }
+        if (names.names.is_empty() && names.overflow_until <= now) || self.dns.len() >= MAX_NAMES {
+            return false;
+        }
+        self.dns.insert(ip, names);
+        true
+    }
+
+    #[cfg(test)]
+    pub fn remember_name(&mut self, ip: IpAddr, name: String) {
+        self.remember_name_for(ip, name, 300);
+    }
+
+    pub fn remember_name_for(&mut self, ip: IpAddr, name: String, ttl: u32) {
+        if name.is_empty() || name.len() > 253 {
+            return;
+        }
+        if self.dns.len() >= MAX_NAMES && !self.dns.contains_key(&ip) {
+            trim_ip_map(&mut self.dns, &self.conns, MAX_NAMES);
+            if self.dns.len() >= MAX_NAMES {
+                return;
+            }
+        }
+        let now = now_ms();
+        let name = name.to_ascii_lowercase();
+        let entry = self.dns.entry(ip).or_default();
+        entry.names.retain(|n| n.expires > now && n.name != name);
+        if ttl == 0 {
+            return;
+        }
+        let expires = now.saturating_add(u64::from(ttl).min(86400) * 1000);
+        if entry.names.len() < 8 {
+            entry.names.push(DnsName { name, expires });
+        } else {
+            entry.overflow_until = entry.overflow_until.max(expires);
         }
     }
 
@@ -460,11 +605,8 @@ impl Store {
     pub fn apply_packet(&mut self, p: &Packet) -> ConnKey {
         self.packets_seen += 1;
 
-        for (name, ip) in &p.dns_addrs {
-            self.dns.insert(*ip, name.clone());
-        }
-        for (name, cname) in &p.dns_cnames {
-            self.cnames.insert(name.clone(), cname.clone());
+        for (name, ip, ttl) in &p.dns_addrs {
+            self.remember_name_for(*ip, name.clone(), *ttl);
         }
 
         let outgoing = self.local_ips.contains(&p.src);
@@ -493,6 +635,9 @@ impl Store {
             Self::attribute_udp(c, udp_owner, None);
             c.closed = false;
             c.state = "NEW".into();
+        } else if c.closed && c.from_packets_only {
+            c.closed = false;
+            c.state = "NEW".into();
         }
         c.last_seen = now_ms();
         if outgoing || !incoming {
@@ -518,13 +663,24 @@ impl Store {
                 continue;
             }
             let ip = c.remote.parse::<IpAddr>().ok();
-            if let Some(name) = ip.as_ref().and_then(|ip| dns.get(ip)) {
+            let known = ip.and_then(|ip| well_known_label(&ip, c.rport));
+            let is_label = |d: &str| known.is_some_and(|(en, ru)| d == en || d == ru);
+            // Закрытое соединение сохраняет DNS-имя, под которым шло: позже тот же
+            // адрес CDN отвечает за другой домен. PTR и подпись по-прежнему заменяются.
+            let frozen = c
+                .domain
+                .as_deref()
+                .is_some_and(|d| c.ptr.as_deref() != Some(d) && !is_label(d));
+            if let Some(name) = ip
+                .as_ref()
+                .and_then(|ip| dns.get(ip).and_then(|d| d.unique(now_ms())))
+                && !frozen
+            {
                 if c.domain.as_ref() != Some(name) {
                     c.domain = Some(name.clone());
                 }
                 continue;
             }
-            let known = ip.and_then(|ip| well_known_label(&ip, c.rport));
             if let Some((en, ru)) = known
                 && c.domain.as_deref().is_some_and(|d| d == en || d == ru)
             {
@@ -577,6 +733,7 @@ mod tests {
             rport: 0,
             state: "UNCONNECTED",
             pid,
+            ambiguous: false,
             cookie: Some(cookie),
         }
     }
@@ -591,7 +748,6 @@ mod tests {
             bytes: 128,
             sni: None,
             dns_addrs: Vec::new(),
-            dns_cnames: Vec::new(),
         }
     }
 
@@ -719,17 +875,16 @@ mod tests {
     #[test]
     fn partial_owner_scan_preserves_identity_and_process_name() {
         let mut s = store();
-        let procs = HashMap::from([(
-            100,
-            ProcInfo {
-                pid: 100,
-                ppid: 0,
-                comm: "demo".into(),
-                name: "DemoGame.exe".into(),
-                cmdline: "DemoGame.exe".into(),
-                proton: false,
-            },
-        )]);
+        let game = ProcInfo {
+            pid: 100,
+            started: 1,
+            ppid: 0,
+            comm: "demo".into(),
+            name: "DemoGame.exe".into(),
+            cmdline: "DemoGame.exe".into(),
+            proton: false,
+        };
+        let procs = HashMap::from([(100, &game)]);
         s.apply_sockets(&[socket("0.0.0.0", Some(100), 1)], &procs);
         s.apply_packet(&outbound());
         s.apply_sockets(&[socket("0.0.0.0", None, 1)], &procs);
@@ -792,6 +947,7 @@ mod tests {
             rport: 27015,
             state: "ESTABLISHED",
             pid,
+            ambiguous: false,
             cookie,
         }
     }
@@ -878,5 +1034,224 @@ mod tests {
         assert_eq!(s.conns[&k].pid, Some(100));
         s.apply_packet(&outbound());
         assert_eq!(s.conns[&k].pid, None);
+    }
+
+    #[test]
+    fn packet_only_tcp_closes_after_silence_and_reopens_on_traffic() {
+        let mut s = store();
+        let k = s.apply_packet(&Packet {
+            proto: Proto::Tcp,
+            ..outbound()
+        });
+        s.apply_sockets(&[], &HashMap::new());
+        assert!(!s.conns[&k].closed);
+        s.conns.get_mut(&k).unwrap().last_seen -= PACKET_ONLY_IDLE_MS + 1;
+        s.apply_sockets(&[], &HashMap::new());
+        assert!(s.conns[&k].closed);
+        s.apply_packet(&Packet {
+            proto: Proto::Tcp,
+            ..outbound()
+        });
+        assert!(!s.conns[&k].closed);
+        assert_eq!(s.conns[&k].state, "NEW");
+    }
+
+    #[test]
+    fn closed_connection_keeps_the_dns_name_it_was_opened_with() {
+        let mut s = store();
+        let remote = ip("198.51.100.20");
+        s.remember_name(remote, "a.example.com".into());
+        s.apply_sockets(&[tcp_socket(Some(100), None)], &HashMap::new());
+        s.enrich_names();
+        s.apply_sockets(&[], &HashMap::new());
+        s.remember_name(remote, "b.example.com".into());
+        s.enrich_names();
+        assert_eq!(
+            conn(&s, "198.51.100.20").domain.as_deref(),
+            Some("a.example.com")
+        );
+    }
+
+    #[test]
+    fn closed_connection_replaces_ptr_with_a_later_dns_name() {
+        let mut s = store();
+        s.apply_sockets(&[tcp_socket(Some(100), None)], &HashMap::new());
+        s.apply_sockets(&[], &HashMap::new());
+        let c = s.conns.values_mut().next().unwrap();
+        c.ptr = Some("host.example.net".into());
+        c.domain = c.ptr.clone();
+        s.remember_name(ip("198.51.100.20"), "example.com".into());
+        s.enrich_names();
+        assert_eq!(
+            conn(&s, "198.51.100.20").domain.as_deref(),
+            Some("example.com")
+        );
+    }
+
+    #[test]
+    fn name_map_is_capped_and_keeps_names_of_known_connections() {
+        let mut s = store();
+        s.apply_sockets(&[tcp_socket(Some(100), None)], &HashMap::new());
+        let used = ip("198.51.100.20");
+        s.remember_name(used, "example.com".into());
+        for i in 0..MAX_NAMES as u32 {
+            s.remember_name(
+                IpAddr::from((0x0a00_0000 + i).to_be_bytes()),
+                "x.example".into(),
+            );
+        }
+        assert!(s.dns.len() <= MAX_NAMES);
+        assert_eq!(
+            s.dns
+                .get(&used)
+                .and_then(|d| d.unique(now_ms()))
+                .map(String::as_str),
+            Some("example.com")
+        );
+    }
+
+    #[test]
+    fn shared_and_reserved_ranges_are_not_public() {
+        for a in [
+            "100.64.0.1",
+            "100.127.255.254",
+            "0.1.2.3",
+            "240.0.0.1",
+            "10.0.0.1",
+            "fec0::1",
+            "fe80::1",
+            "fd00::1",
+        ] {
+            assert_eq!(classify(&ip(a)), "private", "{a}");
+        }
+        for a in [
+            "100.63.255.255",
+            "100.128.0.1",
+            "198.51.100.20",
+            "2001:db8::1",
+        ] {
+            assert_eq!(classify(&ip(a)), "public", "{a}");
+        }
+    }
+
+    #[test]
+    fn trim_never_drops_addresses_of_known_connections() {
+        let mut s = store();
+        let mut map = HashMap::new();
+        for i in 1..=20u8 {
+            let remote = format!("198.51.100.{i}");
+            s.apply_packet(&packet("192.0.2.10", 40000, &remote, 443));
+            map.insert(ip(&remote), ());
+        }
+        map.insert(ip("203.0.113.1"), ());
+        trim_ip_map(&mut map, &s.conns, 10);
+        assert_eq!(map.len(), 20);
+        assert!(!map.contains_key(&ip("203.0.113.1")));
+    }
+    #[test]
+    fn active_flow_keeps_its_dns_name_and_shared_ip_has_no_guess() {
+        let mut s = store();
+        let remote = ip("198.51.100.20");
+        s.remember_name(remote, "a.example.com".into());
+        s.apply_packet(&packet("192.0.2.10", 40000, "198.51.100.20", 443));
+        s.enrich_names();
+        s.remember_name(remote, "b.example.com".into());
+        let next = s.apply_packet(&packet("192.0.2.10", 40001, "198.51.100.20", 443));
+        s.enrich_names();
+        assert_eq!(s.conns[&next].domain, None);
+        assert_eq!(
+            s.conns
+                .values()
+                .find(|c| c.lport == 40000)
+                .unwrap()
+                .domain
+                .as_deref(),
+            Some("a.example.com")
+        );
+    }
+    #[test]
+    fn expired_zero_ttl_and_overflowed_dns_cannot_name_new_flows() {
+        let mut s = store();
+        let remote = ip("198.51.100.20");
+        s.remember_name_for(remote, "expired.example.com".into(), 60);
+        s.dns.get_mut(&remote).unwrap().names[0].expires = now_ms().saturating_sub(1);
+        let k = s.apply_packet(&packet("192.0.2.10", 40000, "198.51.100.20", 443));
+        s.enrich_names();
+        assert!(s.conns[&k].domain.is_none());
+        s.remember_name_for(remote, "zero.example.com".into(), 0);
+        assert!(s.dns[&remote].unique(now_ms()).is_none());
+        for i in 0..20 {
+            s.remember_name_for(remote, format!("{i}.example.com"), 60);
+        }
+        assert_eq!(s.dns[&remote].names.len(), 8);
+        s.dns.get_mut(&remote).unwrap().names.truncate(1);
+        assert!(
+            s.dns[&remote].unique(now_ms()).is_none(),
+            "discarded names still make this address ambiguous"
+        );
+    }
+    #[test]
+    fn shared_inode_stays_unattributed_after_partial_scan() {
+        for proto in [Proto::Udp, Proto::Tcp] {
+            let mut s = store();
+            let mut entry = socket("0.0.0.0", None, 1);
+            entry.proto = proto;
+            entry.ambiguous = true;
+            if proto == Proto::Tcp {
+                entry.local = ip("192.0.2.10");
+                entry.remote = ip("198.51.100.20");
+                entry.rport = 443;
+                entry.state = "ESTABLISHED";
+            }
+            s.apply_sockets(&[entry.clone()], &HashMap::new());
+            let mut p = packet("192.0.2.10", 40000, "198.51.100.20", 443);
+            p.proto = proto;
+            let k = s.apply_packet(&p);
+            entry.pid = Some(100);
+            entry.ambiguous = false;
+            s.apply_sockets(&[entry], &HashMap::new());
+            assert!(s.conns[&k].pid.is_none());
+        }
+    }
+    #[test]
+    fn repeated_pid_with_new_process_start_disputes_socket_history() {
+        let mut s = store();
+        let mut p = ProcInfo {
+            pid: 100,
+            started: 1,
+            ppid: 0,
+            comm: "demo".into(),
+            name: "demo".into(),
+            cmdline: "demo".into(),
+            proton: false,
+        };
+        let sock = tcp_socket(Some(p.pid), Some(1));
+        s.apply_sockets(std::slice::from_ref(&sock), &HashMap::from([(p.pid, &p)]));
+        p.started += 1;
+        s.apply_sockets(&[sock], &HashMap::from([(p.pid, &p)]));
+        assert!(
+            s.conns
+                .values()
+                .all(|c| c.pid.is_none() && c.owner_started.is_none())
+        );
+    }
+    #[test]
+    fn restored_cache_keeps_ambiguity_after_remembered_names_expire() {
+        let mut s = store();
+        let remote = ip("198.51.100.20");
+        assert!(s.restore_dns(
+            remote,
+            DnsEntry {
+                names: vec![DnsName {
+                    name: "expired.example.com".into(),
+                    expires: now_ms().saturating_sub(1)
+                }],
+                overflow_until: now_ms() + 60_000
+            }
+        ));
+        s.remember_name(remote, "fresh.example.com".into());
+        assert!(s.dns[&remote].unique(now_ms()).is_none());
+        let missing = ip("198.51.100.21");
+        assert!(!s.restore_dns(missing, DnsEntry::default()));
     }
 }

@@ -1,5 +1,54 @@
 # Changelog
 
+## v0.2.4 - 2026-10-07
+
+- Ownership: recording groups and socket owners include process start time; reused
+  PIDs cannot join old groups. Shared Linux inodes stay ambiguous after partial scans.
+- Capture: bound packet accounting and Windows ETW queues, count losses, and wait
+  for accepted packets before finalization. ETW parsing and disk writes run outside
+  the callback; deduplicate by packet group and number. Startup leaves foreign
+  PktMon sessions running.
+- Parser: assemble TLS ClientHello across TCP segments and TLS records; reconstruct
+  QUIC packet numbers; support VLAN/QinQ and IPv6 extension headers. Keep full frames
+  in live Linux capture and reject SNI outside declared TLS lengths.
+- DNS: honor TTL, persist expiration and multiple names, freeze established flow
+  names, and avoid guessing for shared IPs. Ignore legacy cache names without TTL.
+- Recording: cap connection and process metadata; limits and tracking losses return
+  errors and preserve raw process captures. Truncated pcapng blocks and mismatched
+  lengths cannot replace the original capture with a seemingly successful rewrite.
+- API and interface: build exports and serialize rows outside the history lock;
+  refresh rows when owner, PID, SNI or start time changes, and show tracking losses
+  in the capture indicator.
+
+- Report: escape the title and time in the HTML report; show "owner unknown" instead
+  of "packets only" for sockets with an unknown process; add GB to byte sizes.
+- Export: the HTML report and JSON follow the filter box and the protocol switch;
+  a whole-host export is no longer titled with the selected process.
+- Linux: a recording stopped by Ctrl+C or systemd is saved instead of failing;
+  a failed start no longer leaves `dumpcap` running or an empty file behind.
+- Processes: the Linux scanner notices exec, PID reuse and reparenting.
+- Connections: TCP seen only in packets closes after a minute of silence; a closed
+  connection keeps the DNS name it was opened with. Addresses behind a CNAME chain
+  get the queried name.
+- Limits: the DNS parser rejects reserved label types and names over 255 bytes on
+  the wire, and skips DNS over TCP split across segments. Name and whois maps are
+  capped without dropping addresses still in the history. Whois is queried only for
+  public addresses, with backoff after failures; CGNAT (`100.64.0.0/10`), `0.0.0.0/8`,
+  `240.0.0.0/4` and `fec0::/10` count as private.
+- Stability: a panic in a background loop restarts it instead of stopping the
+  updates, and a panic on a packet drops only its batch; socket polling no longer
+  blocks the HTTP API; the cache is written atomically with owner-only permissions,
+  an older snapshot never overwrites a newer one, and temporaries left by a crash
+  are removed. Dump names are cut to 64 bytes, not characters.
+- Interface: the process tree works from the keyboard; stale responses no longer
+  reset the selection or show rows of the previous filter or process; the window
+  opens when site storage is blocked.
+- Installation: quote desktop launch paths correctly, install a disabled user service
+  in the user configuration directory, and remove application caches on uninstall
+  while preserving recorded captures.
+- CI: actions pinned to commits, `--locked` builds, an MSRV 1.89 check, a deb build
+  and a Windows smoke run.
+
 ## v0.2.3 - 2026-10-01
 
 - Recording: serialize start, stop and finalization; reject repeated starts without

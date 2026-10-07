@@ -1,9 +1,19 @@
 #!/usr/bin/env bash
 # SocketTrail shortcuts: the main one and hidden aliases for the dock.
-# Usage: packaging/desktop.sh <applications dir> <launch command>
+# Usage: packaging/desktop.sh <applications dir> <program path>
 set -euo pipefail
 APP_DIR=$1
 EXEC=$2
+# Desktop Entry spec: a path with spaces or special characters goes in double quotes
+# with ", `, $ and \ escaped; the string level then doubles every backslash.
+if [[ $EXEC =~ [^A-Za-z0-9_./+-] ]]; then
+  q=${EXEC//\\/\\\\}
+  q=${q//\"/\\\"}
+  q=${q//\`/\\\`}
+  q=${q//\$/\\\$}
+  q=${q//\\/\\\\}
+  EXEC="\"${q//%/%%}\""
+fi
 mkdir -p "$APP_DIR"
 
 cat > "$APP_DIR/sockettrail.desktop" <<DESKTOP

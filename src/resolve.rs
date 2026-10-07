@@ -58,7 +58,8 @@ const CALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 #[cfg(not(windows))]
 async fn run(bin: &str, args: &[&str]) -> Option<(String, String, bool)> {
-    let fut = Command::new(bin).args(args).output();
+    // Без kill_on_drop процесс по таймауту продолжал бы работать в фоне.
+    let fut = Command::new(bin).args(args).kill_on_drop(true).output();
     let out = tokio::time::timeout(CALL_TIMEOUT, fut).await.ok()?.ok()?;
     Some((
         String::from_utf8_lossy(&out.stdout).to_string(),
@@ -91,7 +92,7 @@ async fn ptr_resolvectl(ip: &IpAddr) -> Answer {
             .unwrap_or("")
             .trim()
             .trim_end_matches('.');
-        if valid_name(name) {
+        if valid_name(name) && !reverse_zone(name) {
             return Answer::Ok(name.to_string());
         }
     }
@@ -119,10 +120,17 @@ async fn txt_resolvectl(name: &str) -> Answer {
     Answer::Failed
 }
 
+/// Подсеть меньше /24 делегируется через CNAME в зону вида
+/// `0-25.2.0.192.in-addr.arpa` (RFC 2317): это промежуточное имя, а не PTR.
+fn reverse_zone(name: &str) -> bool {
+    let n = name.trim_end_matches('.').to_ascii_lowercase();
+    n.ends_with(".in-addr.arpa") || n.ends_with(".ip6.arpa")
+}
+
 #[cfg(not(windows))]
 /// Запасной путь для систем без systemd-resolved. Диагностику dig печатает
 /// в stdout вперемешку с ответом, поэтому строки с ';' отбрасываем.
-async fn dig_short(args: &[&str]) -> Answer {
+async fn dig_short(args: &[&str], accept: impl Fn(&str) -> bool) -> Answer {
     let mut full = vec!["+short", "+time=3", "+tries=2"];
     full.extend_from_slice(args);
     let Some((out, err, ok)) = run("dig", &full).await else {
@@ -137,7 +145,7 @@ async fn dig_short(args: &[&str]) -> Answer {
     });
     for line in out.lines() {
         let l = line.trim();
-        if l.is_empty() || l.starts_with(';') {
+        if l.is_empty() || l.starts_with(';') || !accept(l) {
             continue;
         }
         return Answer::Ok(l.trim_matches('"').to_string());
@@ -157,7 +165,7 @@ async fn ptr(ip: &IpAddr) -> Answer {
             other => return other,
         }
     }
-    match dig_short(&["-x", &ip.to_string()]).await {
+    match dig_short(&["-x", &ip.to_string()], |l| !reverse_zone(l)).await {
         Answer::Ok(s) => {
             let s = s.trim_end_matches('.').to_string();
             if valid_name(&s) {
@@ -178,7 +186,17 @@ async fn txt(name: &str) -> Answer {
             other => return other,
         }
     }
-    dig_short(&["TXT", name]).await
+    dig_short(&["TXT", name], |_| true).await
+}
+
+/// Первый ASN из ответа origin. У префикса с несколькими источниками (MOAS)
+/// их перечисляют через пробел: "64500 64501 | 192.0.2.0/24 | ...".
+fn origin_asn(line: &str) -> Option<&str> {
+    line.split('|')
+        .next()?
+        .split_whitespace()
+        .next()
+        .filter(|a| a.chars().all(|c| c.is_ascii_digit()))
 }
 
 fn reverse_name(ip: &IpAddr) -> Option<String> {
@@ -303,7 +321,7 @@ async fn ptr(ip: &IpAddr) -> Answer {
     match win::ptr(arpa(ip)).await {
         Answer::Ok(s) => {
             let s = s.trim_end_matches('.').to_string();
-            if valid_name(&s) {
+            if valid_name(&s) && !reverse_zone(&s) {
                 Answer::Ok(s)
             } else {
                 Answer::Empty
@@ -331,12 +349,7 @@ pub async fn lookup(ip: IpAddr) -> Whois {
         // Пример формата: "64500 | 192.0.2.0/24 | US | arin | 2000-01-01"
         match txt(&format!("{rev}.origin.asn.cymru.com")).await {
             Answer::Ok(line) => {
-                let num = line
-                    .split('|')
-                    .next()
-                    .map(|s| s.trim().to_string())
-                    .filter(|a| !a.is_empty() && a.chars().all(|c| c.is_ascii_digit()));
-                if let Some(a) = num {
+                if let Some(a) = origin_asn(&line) {
                     w.asn = Some(format!("AS{a}"));
                     // Пример названия сети: "64500 | US | arin | 2000-01-01 | EXAMPLE - Example network"
                     match txt(&format!("AS{a}.asn.cymru.com")).await {
@@ -362,6 +375,27 @@ pub async fn lookup(ip: IpAddr) -> Whois {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn origin_asn_takes_the_first_of_several_origins() {
+        assert_eq!(
+            origin_asn("64500 | 192.0.2.0/24 | US | arin | 2000-01-01"),
+            Some("64500")
+        );
+        assert_eq!(
+            origin_asn("64500 64501 | 192.0.2.0/24 | US | arin"),
+            Some("64500")
+        );
+        assert_eq!(origin_asn(" | 192.0.2.0/24"), None);
+        assert_eq!(origin_asn("NA | 192.0.2.0/24"), None);
+    }
+
+    #[test]
+    fn rfc2317_delegation_name_is_not_a_ptr() {
+        assert!(reverse_zone("4.0-25.2.0.192.in-addr.arpa."));
+        assert!(reverse_zone("1.0.0.0.ip6.ARPA"));
+        assert!(!reverse_zone("host.example.com."));
+    }
 
     /// Нужна сеть: cargo test -- --ignored. Под Wine 10 не проходит: DnsQuery_W
     /// падает с кодом 8 на копировании EDNS-записи OPT, на Windows это не так.

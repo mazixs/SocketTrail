@@ -16,8 +16,13 @@ BIN_DIR="${XDG_BIN_HOME:-$HOME/.local/bin}"
 case "$BIN_DIR" in
   */snap/*) BIN_DIR="$HOME/.local/bin" ;;
 esac
+CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
+case "$CONFIG_HOME" in
+  */snap/*) CONFIG_HOME="$HOME/.config" ;;
+esac
 APP_DIR="$DATA_HOME/applications"
 ICON_DIR="$DATA_HOME/icons/hicolor/scalable/apps"
+UNIT_DIR="$CONFIG_HOME/systemd/user"
 
 echo "== Build"
 cargo build --release
@@ -29,12 +34,26 @@ install -m 644 assets/sockettrail.svg "$ICON_DIR/sockettrail.svg"
 
 packaging/desktop.sh "$APP_DIR" "$BIN_DIR/sockettrail"
 
+# Background collection unit, disabled as in the .deb. systemd has no specifier for
+# XDG_BIN_HOME, so the copy gets the real path; systemd rejects " and \ in it.
+if [[ $BIN_DIR == *[\"\\]* ]]; then
+  UNIT_NOTE="not installed: systemd does not accept \" or \\ in $BIN_DIR"
+else
+  mkdir -p "$UNIT_DIR"
+  unit=$(<assets/sockettrail.service)
+  printf '%s\n' "${unit//'%h/.local/bin/sockettrail'/"\"${BIN_DIR//%/%%}/sockettrail\""}" \
+    > "$UNIT_DIR/sockettrail.service"
+  command -v systemctl >/dev/null && systemctl --user daemon-reload 2>/dev/null || true
+  UNIT_NOTE="$UNIT_DIR/sockettrail.service (off: systemctl --user enable --now sockettrail)"
+fi
+
 command -v update-desktop-database >/dev/null && update-desktop-database "$APP_DIR" 2>/dev/null || true
 # No icon cache in the home directory: without it GTK scans the directory itself,
 # while a stale cache hides icons added later and keeps removed ones.
 
 echo "   binary:    $BIN_DIR/sockettrail"
 echo "   shortcut:  $APP_DIR/sockettrail.desktop"
+echo "   service:   $UNIT_NOTE"
 
 echo
 echo "== Environment check"

@@ -110,11 +110,10 @@ impl Plan {
         let mut head = [0u8; 8];
         let mut body = Vec::new();
         loop {
-            match r.read_exact(&mut head) {
-                Ok(()) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
-                Err(e) => return Err(e),
+            if r.read(&mut head[..1])? == 0 {
+                break;
             }
+            r.read_exact(&mut head[1..])?;
             let ty = le32(&head, 0);
             let len = le32(&head, 4) as usize;
             if !(12..=(1 << 26)).contains(&len) || !len.is_multiple_of(4) {
@@ -124,11 +123,12 @@ impl Plan {
                 )));
             }
             body.resize(len - 8, 0);
-            match r.read_exact(&mut body) {
-                Ok(()) => {}
-                // обрубленный последний блок: запись прервали принудительно
-                Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
-                Err(e) => return Err(e),
+            r.read_exact(&mut body)?;
+            if le32(&body, body.len() - 4) as usize != len {
+                return Err(std::io::Error::other(t!(
+                    "pcapng block lengths disagree",
+                    "Длины блока pcapng не совпадают"
+                )));
             }
             body.truncate(len - 12);
             match ty {
@@ -362,5 +362,31 @@ mod tests {
             std::fs::metadata(path).unwrap().permissions().mode() & 0o777,
             0o600
         );
+    }
+    #[test]
+    fn truncated_block_and_mismatched_trailer_preserve_original() {
+        let dir = crate::paths::TestDir::new("truncated-capture");
+        let path = dir.0.join("demo.pcapng");
+        let header = file(&[]);
+        let frame = udp_frame([192, 0, 2, 1], 40000, [198, 51, 100, 1], 443);
+        let complete = file(&[frame]);
+        let plan = Plan {
+            owners: HashMap::new(),
+            only_group: false,
+            comment: "demo".into(),
+        };
+        for n in header.len() + 1..complete.len() {
+            let original = &complete[..n];
+            std::fs::write(&path, original).unwrap();
+            assert!(plan.rewrite(path.to_str().unwrap()).is_err(), "prefix {n}");
+            assert_eq!(std::fs::read(&path).unwrap(), original);
+            assert!(!path.with_extension("pcapng.part").exists());
+        }
+        let mut bad = complete;
+        let last = bad.len() - 1;
+        bad[last] ^= 1;
+        std::fs::write(&path, &bad).unwrap();
+        assert!(plan.rewrite(path.to_str().unwrap()).is_err());
+        assert_eq!(std::fs::read(path).unwrap(), bad);
     }
 }

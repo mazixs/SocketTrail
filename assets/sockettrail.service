@@ -1,7 +1,5 @@
 # Background collection: the connection history builds up before the window is opened.
-# Optional:
-#   mkdir -p ~/.config/systemd/user
-#   cp assets/sockettrail.service ~/.config/systemd/user/
+# install.sh and the .deb install it disabled, with the real binary path. To enable:
 #   systemctl --user enable --now sockettrail
 # After that the shortcut or the sockettrail command just opens the window of the
 # running instance instead of starting a second one.

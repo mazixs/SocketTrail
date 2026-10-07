@@ -27,8 +27,7 @@ struct Entry {
     started: u64,
 }
 
-/// Кеш по PID. Запись считается тем же процессом, пока совпадают имя exe и
-/// родитель: так не нужно открывать каждый процесс на каждом проходе.
+/// Время создания проверяется и при совпадении имени и родителя: PID повторяется.
 #[derive(Default)]
 pub struct Scanner {
     cache: HashMap<i32, Entry>,
@@ -36,11 +35,29 @@ pub struct Scanner {
 
 impl Scanner {
     pub fn refresh(&mut self) -> Vec<ProcInfo> {
-        let list = toolhelp();
+        self.refresh_list(toolhelp(), None)
+    }
+
+    pub fn refresh_pids(&mut self, pids: &[i32]) -> Vec<ProcInfo> {
+        self.refresh_list(
+            toolhelp()
+                .into_iter()
+                .filter(|(pid, _, _)| pids.contains(pid))
+                .collect(),
+            Some(pids),
+        )
+    }
+
+    fn refresh_list(
+        &mut self,
+        list: Vec<(i32, i32, String)>,
+        subset: Option<&[i32]>,
+    ) -> Vec<ProcInfo> {
         let mut seen = HashMap::with_capacity(list.len());
         for (pid, ppid, exe) in list {
+            let started = process_start(pid);
             let fresh = match self.cache.get(&pid) {
-                Some(e) => e.exe != exe || e.info.ppid != ppid,
+                Some(e) => e.exe != exe || e.info.ppid != ppid || e.started != started,
                 None => true,
             };
             if fresh {
@@ -48,7 +65,9 @@ impl Scanner {
             }
             seen.insert(pid, ());
         }
-        self.cache.retain(|pid, _| seen.contains_key(pid));
+        self.cache.retain(|pid, _| {
+            subset.is_some_and(|pids| !pids.contains(pid)) || seen.contains_key(pid)
+        });
 
         // Windows не переписывает PPID, когда родитель умирает, а PID переиспользуются:
         // "родитель", стартовавший позже потомка, - чужой процесс с тем же номером.
@@ -56,6 +75,7 @@ impl Scanner {
         let mut out: Vec<ProcInfo> = self
             .cache
             .values()
+            .filter(|e| subset.is_none_or(|pids| pids.contains(&e.info.pid)))
             .map(|e| {
                 let mut p = e.info.clone();
                 let ps = started.get(&p.ppid).copied().unwrap_or(0);
@@ -67,6 +87,18 @@ impl Scanner {
             .collect();
         out.sort_by_key(|p| p.pid);
         out
+    }
+}
+
+fn process_start(pid: i32) -> u64 {
+    unsafe {
+        let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid as u32);
+        if h.is_null() {
+            return 0;
+        }
+        let started = start_time(h);
+        CloseHandle(h);
+        started
     }
 }
 
@@ -119,6 +151,7 @@ fn read(pid: i32, ppid: i32, exe: String) -> Entry {
     Entry {
         info: ProcInfo {
             pid,
+            started,
             ppid,
             comm: exe.clone(),
             name: exe.clone(),

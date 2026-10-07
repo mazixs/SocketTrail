@@ -162,7 +162,7 @@ fn header(d: &[u8]) -> Option<Header<'_>> {
 
 /// Снятие защиты заголовка и расшифровка. Проверка тега отсекает Initial
 /// сервера (у него другие ключи) и все, что только похоже на QUIC.
-fn open(keys: &Keys, d: &[u8], h: &Header) -> Option<Vec<u8>> {
+fn open(keys: &Keys, d: &[u8], h: &Header, largest: Option<u64>) -> Option<(Vec<u8>, u64)> {
     let mut pkt = d[..h.end].to_vec();
     let mask = keys.mask(pkt.get(h.pn_off + 4..h.pn_off + 20)?)?;
     pkt[0] ^= mask[0] & 0x0f;
@@ -172,6 +172,7 @@ fn open(keys: &Keys, d: &[u8], h: &Header) -> Option<Vec<u8>> {
         pkt[h.pn_off + i] ^= mask[1 + i];
         pn = (pn << 8) | pkt[h.pn_off + i] as u64;
     }
+    pn = decode_number(pn, pn_len * 8, largest);
     let body = h.pn_off + pn_len;
     let tag_at = h.end.checked_sub(16).filter(|&t| t >= body)?;
     let tag = Tag::<Aes128Gcm>::try_from(&pkt[tag_at..]).ok()?;
@@ -186,7 +187,22 @@ fn open(keys: &Keys, d: &[u8], h: &Header) -> Option<Vec<u8>> {
         .ok()?;
     pkt.truncate(tag_at);
     pkt.drain(..body);
-    Some(pkt)
+    Some((pkt, pn))
+}
+
+/// RFC 9000 Appendix A.3: ближайший номер к следующему ожидаемому.
+fn decode_number(truncated: u64, bits: usize, largest: Option<u64>) -> u64 {
+    let expected = largest.map_or(0, |n| n + 1);
+    let window = 1u64 << bits;
+    let half = window / 2;
+    let candidate = (expected & !(window - 1)) | truncated;
+    if candidate + half <= expected && candidate < (1u64 << 62) - window {
+        candidate + window
+    } else if candidate > expected + half && candidate >= window {
+        candidate - window
+    } else {
+        candidate
+    }
 }
 
 /// Куски CRYPTO из открытого Initial. Кроме них в Initial бывают только
@@ -245,6 +261,7 @@ struct Flow {
     ready: usize,
     seen: Instant,
     done: bool,
+    largest: Option<u64>,
 }
 
 impl Flow {
@@ -302,11 +319,21 @@ impl Assembler {
     pub fn feed(&mut self, src: IpAddr, sport: u16, mut d: &[u8]) -> Option<String> {
         let mut sni = None;
         while let Some(h) = header(d) {
+            let key = (src, sport, h.dcid.to_vec());
+            if self
+                .flows
+                .get(&key)
+                .is_some_and(|f| f.seen.elapsed() >= TTL)
+            {
+                self.flows.remove(&key);
+            }
+            let largest = self.flows.get(&key).and_then(|f| f.largest);
             if h.initial
                 && let Some(keys) = Keys::new(h.version, h.dcid)
-                && let Some(plain) = open(&keys, d, &h)
-                && let Some(flow) = self.flow((src, sport, h.dcid.to_vec()))
+                && let Some((plain, pn)) = open(&keys, d, &h, largest)
+                && let Some(flow) = self.flow(key)
             {
+                flow.largest = Some(flow.largest.map_or(pn, |old| old.max(pn)));
                 for (off, data) in crypto_frames(&plain) {
                     if flow.done {
                         break;
@@ -339,6 +366,7 @@ impl Assembler {
             ready: 0,
             seen: now,
             done: false,
+            largest: None,
         });
         flow.seen = now;
         (!flow.done).then_some(flow)
@@ -486,6 +514,7 @@ mod tests {
             ready: 0,
             seen: Instant::now(),
             done: false,
+            largest: None,
         };
         assert_eq!(f.add(usize::MAX - 1, &[1, 2, 3]), None);
         assert!(f.buf.is_empty());
@@ -509,5 +538,27 @@ mod tests {
         let p = crate::pcap::parse_link_with(101, &ip, Some(&mut a)).unwrap();
         assert_eq!(p.sni.as_deref(), Some("example.com"));
         assert_eq!(crate::pcap::parse_link(101, &ip).unwrap().sni, None);
+    }
+    #[test]
+    fn truncated_packet_numbers_wrap_and_accept_reordering() {
+        let dcid = unhex("0011223344556677");
+        let h = hello();
+        let src = "192.0.2.1".parse().unwrap();
+        for v in &VERSIONS {
+            let mut a = Assembler::new();
+            assert_eq!(
+                a.feed(src, 50000, &seal(v, &dcid, 255, 1, crypto(0, &h[..60]))),
+                None
+            );
+            assert_eq!(
+                a.feed(src, 50000, &seal(v, &dcid, 257, 1, crypto(150, &h[150..]))),
+                None
+            );
+            assert_eq!(
+                a.feed(src, 50000, &seal(v, &dcid, 256, 1, crypto(60, &h[60..150])))
+                    .as_deref(),
+                Some("example.com")
+            );
+        }
     }
 }

@@ -21,16 +21,28 @@ jobs:
   lint:
     runs-on: ubuntu-26.04
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
         with:
+          toolchain: stable
           components: rustfmt, clippy
           targets: x86_64-pc-windows-gnu
       - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends gcc-mingw-w64-x86-64 binutils-mingw-w64-x86-64
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - run: cargo fmt --check
-      - run: cargo clippy --all-targets
-      - run: cargo clippy --all-targets --target x86_64-pc-windows-gnu
+      - run: cargo clippy --locked --all-targets
+      - run: cargo clippy --locked --all-targets --target x86_64-pc-windows-gnu
+
+  # rust-version in Cargo.toml is a promise, this job keeps it.
+  msrv:
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+        with:
+          toolchain: "1.89"
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - run: cargo check --locked --all-targets
 
   # 24.04 is where the release .deb is built, 26.04 is the newest image.
   test-linux:
@@ -40,13 +52,18 @@ jobs:
         os: [ubuntu-24.04, ubuntu-26.04]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo test
-      - run: cargo build --release
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - run: cargo test --locked
+      - run: cargo build --locked --release
       - run: packaging/smoke.sh target/release/sockettrail
       - run: python3 packaging/recording-smoke.py target/release/sockettrail
+      # The release .deb is built on 24.04, packaging errors should show up before a tag.
+      - if: matrix.os == 'ubuntu-24.04'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends dpkg-dev && make deb
 
   # Quick check of the Windows code without Windows: mingw build and tests under Wine.
   test-wine:
@@ -54,9 +71,10 @@ jobs:
     env:
       WINEDEBUG: -all
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
         with:
+          toolchain: stable
           targets: x86_64-pc-windows-gnu
       # Older Wine does not report the owner PID in the socket table, WineHQ 10+ is needed.
       # WineHQ 11 uses the new WoW64 and needs no i386 packages. apt 3 takes an armored
@@ -73,18 +91,28 @@ jobs:
           sudo apt-get install -y --install-recommends winehq-stable
           wine --version
           wineboot --init
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo test --target x86_64-pc-windows-gnu
-      - run: cargo build --release --target x86_64-pc-windows-gnu
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - run: cargo test --locked --target x86_64-pc-windows-gnu
+      - run: cargo build --locked --release --target x86_64-pc-windows-gnu
       - run: packaging/smoke.sh wine target/x86_64-pc-windows-gnu/release/sockettrail.exe
 
   test-windows:
     runs-on: windows-2025
+    # The global RUSTFLAGS replaces rustflags from .cargo/config.toml, keep the static CRT of the release.
+    env:
+      RUSTFLAGS: -D warnings -C target-feature=+crt-static
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo test -- --include-ignored
-      - run: cargo build --release
-      - run: packaging/smoke.sh target/release/sockettrail.exe
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - run: cargo test --locked -- --include-ignored
+      - name: Build zip as in the release (msvc, static CRT)
+        shell: bash
+        env:
+          TARGET: x86_64-pc-windows-msvc
+          PYTHON: python
+        run: packaging/build-win.sh
+      - run: packaging/smoke.sh target/windows/SocketTrail/sockettrail.exe
         shell: bash

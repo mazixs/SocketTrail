@@ -24,13 +24,14 @@ mod report;
 mod resolve;
 mod sockets;
 mod state;
+mod tls;
 #[cfg(windows)]
 mod win_startup;
 mod window;
 
 use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, UNIX_EPOCH};
 
 use axum::extract::Request;
@@ -53,6 +54,9 @@ struct DumpMeta {
     only_group: bool,
     /// все процессы группы, замеченные за время записи
     pids: HashSet<i32>,
+    instances: HashSet<procs::Identity>,
+    limit_reached: bool,
+    dropped_at_start: u64,
     started: u64,
     last_alive: u64,
     /// Подтвержденные соединения записи не теряются при очистке/вытеснении
@@ -62,6 +66,8 @@ struct DumpMeta {
 
 /// Через столько после выхода всех процессов группы запись "только процесс" останавливается сама.
 const DUMP_IDLE_MS: u64 = 15_000;
+const MAX_DUMP_CONNS: usize = 40_000;
+const MAX_DUMP_PROCS: usize = 4096;
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 enum DumpPhase {
@@ -97,6 +103,8 @@ struct App {
     /// процессы, у которых сейчас есть внешние соединения
     active_pids: HashSet<i32>,
     selected: Option<i32>,
+    selected_instance: Option<procs::Identity>,
+    capture_metrics: Arc<capture::Metrics>,
     group: Vec<i32>,
     dump: capture::Dump,
     dump_phase: DumpPhase,
@@ -122,6 +130,36 @@ struct App {
 }
 
 type Shared = Arc<Mutex<App>>;
+
+/// Паника одного обработчика не должна замораживать все окно: после нее данные
+/// могут быть неполными, но отравленный Mutex остановил бы и API, и фоновые циклы.
+fn lock(app: &Mutex<App>) -> MutexGuard<'_, App> {
+    app.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Фоновый цикл после паники перезапускается, иначе данные в окне молча застынут.
+fn supervise<F, Fut>(name: &'static str, app: &Shared, task: F)
+where
+    F: Fn(Shared) -> Fut + Send + 'static,
+    Fut: Future<Output = ()> + Send + 'static,
+{
+    let app = app.clone();
+    tokio::spawn(async move {
+        while let Err(e) = tokio::spawn(task(app.clone())).await {
+            if !e.is_panic() {
+                break;
+            }
+            eprintln!(
+                "{}",
+                t!(
+                    "[{name}] the loop panicked, restarting",
+                    "[{name}] цикл завершился паникой, перезапуск"
+                )
+            );
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+    });
+}
 
 const HELP_EN: &str = "\
 SocketTrail - network connection monitor tied to processes.
@@ -259,9 +297,14 @@ async fn is_ours(port: u16) -> bool {
 /// Занимает порт. Если там уже работает наш экземпляр - открывает его окно и выходит,
 /// чтобы повторный клик по ярлыку не плодил копии. Чужой порт - берем следующий.
 async fn bind_port(pref: u16, open: bool) -> (tokio::net::TcpListener, u16) {
-    for port in pref..pref.saturating_add(20) {
+    let last = pref.saturating_add(19);
+    for port in pref..=last {
         match tokio::net::TcpListener::bind(("127.0.0.1", port)).await {
-            Ok(l) => return (l, port),
+            // При --port 0 порт выбирает система, Host проверяется по настоящему.
+            Ok(l) => {
+                let port = l.local_addr().map_or(port, |a| a.port());
+                return (l, port);
+            }
             Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
                 if is_ours(port).await {
                     let url = format!("http://127.0.0.1:{port}/");
@@ -291,7 +334,6 @@ async fn bind_port(pref: u16, open: bool) -> (tokio::net::TcpListener, u16) {
             }
         }
     }
-    let last = pref + 20;
     eprintln!(
         "{}",
         t!(
@@ -321,11 +363,14 @@ async fn main() {
     let mut store = Store::default();
     store.set_local_ips(sockets::local_addresses());
 
+    let capture_metrics = Arc::new(capture::Metrics::default());
     let app: Shared = Arc::new(Mutex::new(App {
         store,
         procs: Vec::new(),
         active_pids: HashSet::new(),
         selected: None,
+        selected_instance: None,
+        capture_metrics: capture_metrics.clone(),
         group: Vec::new(),
         dump: capture::Dump::default(),
         dump_phase: DumpPhase::Idle,
@@ -346,11 +391,12 @@ async fn main() {
     // Имена из прошлых запусков: DNS-ответ пролетает один раз, второго шанса нет.
     {
         let disk = cache::load();
-        let mut g = app.lock().unwrap();
+        let mut g = lock(&app);
         let mut restored = 0usize;
-        for (ip, name) in disk.dns {
-            if let Ok(ip) = ip.parse::<IpAddr>() {
-                g.store.dns.insert(ip, name);
+        for (ip, names) in disk.dns_names {
+            if let Ok(ip) = ip.parse::<IpAddr>()
+                && g.store.restore_dns(ip, names)
+            {
                 restored += 1;
             }
         }
@@ -379,10 +425,11 @@ async fn main() {
     }
 
     // Живой захват держим до выхода: Drop гасит dumpcap или сессию PktMon.
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let (tx, mut rx) = tokio::sync::mpsc::channel(capture::QUEUE_CAPACITY);
+    let tx = capture::PacketSender::new(tx, capture_metrics);
     let live_capture = match capture::start_live(&iface, tx).await {
         Ok(live) => {
-            let mut g = app.lock().unwrap();
+            let mut g = lock(&app);
             if let Some(pid) = live.pid() {
                 g.self_roots.insert(pid as i32);
                 g.self_pids.insert(pid as i32);
@@ -390,12 +437,36 @@ async fn main() {
             g.capture_on = true;
             drop(g);
             let a = app.clone();
+            // Пачкой за одну блокировку: под нагрузкой блокировка на каждый
+            // пакет отставала бы от захвата, и очередь росла бы в памяти.
+            // Паника на одном пакете теряет только его пачку, а не весь разбор.
             tokio::spawn(async move {
-                while let Some(p) = rx.recv().await {
-                    if let Ok(mut g) = a.lock() {
-                        let key = g.store.apply_packet(&p);
-                        record_dump_conn(&mut g, &key);
+                let mut batch = Vec::with_capacity(256);
+                while rx.recv_many(&mut batch, 256).await > 0 {
+                    let mut g = lock(&a);
+                    let batch_size = batch.len();
+                    let applied = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        for p in batch.drain(..) {
+                            let key = g.store.apply_packet(&p);
+                            record_dump_conn(&mut g, &key);
+                        }
+                    }));
+                    if applied.is_err() {
+                        g.capture_metrics
+                            .dropped
+                            .fetch_add(batch_size as u64, std::sync::atomic::Ordering::Relaxed);
+                        batch.clear();
+                        eprintln!(
+                            "{}",
+                            t!(
+                                "[capture] a packet batch was dropped after a panic",
+                                "[capture] пачка пакетов отброшена после паники"
+                            )
+                        );
                     }
+                    g.capture_metrics
+                        .processed
+                        .fetch_add(batch_size as u64, std::sync::atomic::Ordering::Release);
                 }
             });
             let how = live.describe(&iface);
@@ -417,7 +488,7 @@ async fn main() {
                     "[capture] пакетный разбор выключен, остается опрос сокетов.\n{h}"
                 )
             );
-            let mut g = app.lock().unwrap();
+            let mut g = lock(&app);
             g.capture_hint = Some(hint);
             #[cfg(windows)]
             {
@@ -440,7 +511,7 @@ async fn main() {
             }
             if let Err(hint) = live.check() {
                 eprintln!("[capture] {}", hint.get());
-                let mut g = capture_app.lock().unwrap();
+                let mut g = lock(&capture_app);
                 g.capture_on = false;
                 g.capture_hint = Some(hint);
                 break;
@@ -449,10 +520,10 @@ async fn main() {
     });
 
     #[cfg(windows)]
-    tokio::spawn(dnscache_loop(app.clone()));
-    tokio::spawn(poll_loop(app.clone()));
-    tokio::spawn(whois_loop(app.clone()));
-    tokio::spawn(cache_loop(app.clone()));
+    supervise("dnscache", &app, dnscache_loop);
+    supervise("poll", &app, poll_loop);
+    supervise("whois", &app, whois_loop);
+    supervise("cache", &app, cache_loop);
 
     let alive = Arc::new(alive::Alive::default());
     let router = Router::new()
@@ -576,7 +647,7 @@ async fn api_elevate(State(app): State<Shared>) -> impl IntoResponse {
     #[cfg(windows)]
     {
         let (port, iface, quit) = {
-            let g = app.lock().unwrap();
+            let g = lock(&app);
             (g.port, g.iface.clone(), g.quit.clone())
         };
         let mut args = format!(
@@ -613,9 +684,9 @@ async fn api_elevate(State(app): State<Shared>) -> impl IntoResponse {
 async fn dnscache_loop(app: Shared) {
     loop {
         if let Ok(pairs) = tokio::task::spawn_blocking(dnscache::snapshot).await {
-            let mut g = app.lock().unwrap();
-            for (name, ip) in pairs {
-                g.store.dns.insert(ip, name);
+            let mut g = lock(&app);
+            for (name, ip, ttl) in pairs {
+                g.store.remember_name_for(ip, name, ttl);
             }
         }
         tokio::time::sleep(Duration::from_secs(3)).await;
@@ -660,7 +731,7 @@ fn spawn_signal_watch(tx: tokio::sync::mpsc::UnboundedSender<&'static str>) {
 /// Перед выходом: закрыть незавершенный дамп (иначе .pcapng останется без
 /// карты соединений) и сохранить кеш имен.
 async fn shutdown(app: &Shared) {
-    let running = app.lock().unwrap().dump_phase == DumpPhase::Recording;
+    let running = lock(app).dump_phase == DumpPhase::Recording;
     if running {
         let outcome = finish_dump(app, false).await;
         if let Some(p) = outcome.path {
@@ -670,34 +741,57 @@ async fn shutdown(app: &Shared) {
             );
         }
     }
-    let disk = cache_snapshot(&app.lock().unwrap());
-    cache::save(&disk);
+    cache::save(|| cache_snapshot(&lock(app)));
 }
 
 /// Защита локального API от чужих страниц в браузере. Проверка Host отсекает
 /// DNS rebinding (чужой домен, указывающий на 127.0.0.1), проверка Origin -
 /// запросы со сторонних сайтов, которые браузер отправляет без спроса (CSRF).
 async fn guard(port: u16, req: Request, next: Next) -> Response {
-    let allowed = [format!("127.0.0.1:{port}"), format!("localhost:{port}")];
-    let host_ok = req
-        .headers()
-        .get(header::HOST)
-        .and_then(|h| h.to_str().ok())
-        .map(|h| allowed.iter().any(|a| a == h))
-        .unwrap_or(false);
-    let origin_ok = req.method() == Method::GET
-        || match req
-            .headers()
-            .get(header::ORIGIN)
-            .and_then(|o| o.to_str().ok())
-        {
-            None => true,
-            Some(o) => allowed.iter().any(|a| o == format!("http://{a}")),
-        };
-    if host_ok && origin_ok {
+    if request_allowed(port, req.method(), req.headers()) {
         next.run(req).await
     } else {
         (StatusCode::FORBIDDEN, "forbidden").into_response()
+    }
+}
+
+/// Host защищает от DNS rebinding, Origin - от POST с чужих страниц. GET с чужого
+/// сайта (`<img src=.../api/alive>`, ссылка на `/api/export`) отсекает
+/// Sec-Fetch-Site: браузер ставит его на запросы к 127.0.0.1 и localhost.
+fn request_allowed(port: u16, method: &Method, headers: &axum::http::HeaderMap) -> bool {
+    let allowed = [format!("127.0.0.1:{port}"), format!("localhost:{port}")];
+    let value = |name: header::HeaderName| headers.get(name).and_then(|h| h.to_str().ok());
+    let host_ok = value(header::HOST).is_some_and(|h| allowed.iter().any(|a| a == h));
+    let origin_ok = method == Method::GET
+        || match value(header::ORIGIN) {
+            None => true,
+            Some(o) => allowed.iter().any(|a| o == format!("http://{a}")),
+        };
+    let site_ok = !matches!(
+        value(header::HeaderName::from_static("sec-fetch-site")),
+        Some("cross-site" | "same-site")
+    );
+    host_ok && origin_ok && site_ok
+}
+
+fn refresh_selected_group(g: &mut App, processes: &[ProcInfo], full: bool) {
+    let Some(pid) = g.selected else {
+        return;
+    };
+    match processes.iter().find(|p| p.pid == pid) {
+        Some(process) if Some(process.identity()) == g.selected_instance => {
+            if full {
+                g.group = procs::descendants(processes, pid);
+            }
+        }
+        Some(_) => {
+            g.selected = None;
+            g.selected_instance = None;
+            g.group.clear();
+        }
+        None => {
+            g.group.clear();
+        }
     }
 }
 
@@ -709,32 +803,57 @@ async fn poll_loop(app: Shared) {
         tick += 1;
         let full = tick % 8 == 1; // примерно раз в 2 секунды
 
-        let (selected, group) = {
-            let g = app.lock().unwrap();
-            (g.selected, g.group.clone())
+        let group = {
+            let g = lock(&app);
+            {
+                let mut group = g.group.clone();
+                if let Some(m) = &g.dump_meta {
+                    group.extend(m.pids.iter().copied());
+                }
+                group.sort_unstable();
+                group.dedup();
+                group
+            }
         };
 
-        let all_procs = if full { Some(scanner.refresh()) } else { None };
-        let scan_pids: Vec<i32> = match (&all_procs, selected) {
-            (Some(p), _) => p.iter().map(|x| x.pid).collect(),
-            (None, Some(_)) => group,
-            (None, None) => Vec::new(),
-        };
-
-        let socks = sockets::snapshot(&scan_pids);
-        let local_ips = if full {
-            sockets::local_addresses()
-        } else {
-            None
-        };
+        // Обход /proc/<pid>/fd и таблиц сокетов - блокирующий ввод-вывод,
+        // на воркере tokio он задерживал бы ответы API.
+        let (back, all_procs, partial_procs, scan_pids, socks, local_ips) =
+            tokio::task::spawn_blocking(move || {
+                let all_procs = full.then(|| scanner.refresh());
+                let scan_pids: Vec<i32> = match &all_procs {
+                    Some(p) => p.iter().map(|x| x.pid).collect(),
+                    None => group,
+                };
+                let socks = sockets::snapshot(&scan_pids);
+                let partial_procs = if full {
+                    Vec::new()
+                } else {
+                    scanner.refresh_pids(&scan_pids)
+                };
+                let local_ips = if full {
+                    sockets::local_addresses()
+                } else {
+                    None
+                };
+                (
+                    scanner,
+                    all_procs,
+                    partial_procs,
+                    scan_pids,
+                    socks,
+                    local_ips,
+                )
+            })
+            .await
+            .expect("socket poll");
+        scanner = back;
 
         {
-            let mut g = app.lock().unwrap();
+            let mut g = lock(&app);
             if let Some(p) = all_procs {
                 // пересчет группы выбранного процесса: Proton плодит потомков на ходу
-                if let Some(sel) = g.selected {
-                    g.group = procs::descendants(&p, sel);
-                }
+                refresh_selected_group(&mut g, &p, true);
                 // Свои - это не только сам процесс: dumpcap и короткоживущие dig
                 // тоже наши, их соединения к анализу отношения не имеют.
                 let roots: Vec<i32> = g.self_roots.iter().copied().collect();
@@ -746,9 +865,18 @@ async fn poll_loop(app: Shared) {
                 track_dump(&mut g, &p);
                 g.procs = p;
             }
-            let pmap: HashMap<i32, ProcInfo> = g.procs.iter().map(|p| (p.pid, p.clone())).collect();
-            g.store.set_local_ips(local_ips);
-            g.store.apply_sockets(&socks, &pmap);
+            if !full {
+                let scanned: HashSet<i32> = scan_pids.into_iter().collect();
+                g.procs.retain(|p| !scanned.contains(&p.pid));
+                g.procs.extend(partial_procs);
+                let processes = g.procs.clone();
+                refresh_selected_group(&mut g, &processes, false);
+                track_dump(&mut g, &processes);
+            }
+            let App { store, procs, .. } = &mut *g;
+            let pmap: HashMap<i32, &ProcInfo> = procs.iter().map(|p| (p.pid, p)).collect();
+            store.set_local_ips(local_ips);
+            store.apply_sockets(&socks, &pmap);
             if full {
                 // UDP без удаленного адреса (так всегда на Windows) активен, если по его порту идут пакеты
                 let recent = state::now_ms().saturating_sub(5_000);
@@ -770,39 +898,52 @@ async fn poll_loop(app: Shared) {
             apply_whois(&mut g);
             record_dump(&mut g);
         }
-        if full {
-            let a = app.clone();
-            tokio::spawn(async move { auto_stop_dump(&a).await });
-        }
+        let a = app.clone();
+        tokio::spawn(async move { auto_stop_dump(&a).await });
 
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
 }
+
+/// Адреса для опознания: только публичные и без повторов, иначе одно соединение
+/// с CDN занимает всю пачку, а PTR для fe80:: раскрывает резолверу MAC соседей.
+fn whois_targets(g: &App, retry: impl Fn(&IpAddr) -> bool) -> Vec<IpAddr> {
+    let mut seen = HashSet::new();
+    g.store
+        .conns
+        .keys()
+        .map(|k| k.remote)
+        .filter(|ip| state::classify(ip) == "public" && !ip.is_unspecified())
+        .filter(|ip| !g.whois.contains_key(ip) && retry(ip))
+        .filter(|ip| seen.insert(*ip))
+        .take(WHOIS_BATCH)
+        .collect()
+}
+
+const WHOIS_BATCH: usize = 8;
 
 /// Фоновое опознание адресов, по несколько штук за проход, с кешем.
 /// Отказ резолвера кешем не считается: такой адрес пробуем еще несколько раз,
 /// иначе в таблице рядом оказываются адреса с именем и без него без причины.
 async fn whois_loop(app: Shared) {
     const MAX_RETRIES: u8 = 3;
-    let mut fails: HashMap<IpAddr, u8> = HashMap::new();
+    // Отказ при старте службы часто значит, что сеть еще не поднялась.
+    const RETRY_AFTER: Duration = Duration::from_secs(600);
+    let mut fails: HashMap<IpAddr, (u8, tokio::time::Instant)> = HashMap::new();
     loop {
-        let targets: Vec<IpAddr> = {
-            let g = app.lock().unwrap();
-            g.store
-                .conns
-                .values()
-                .filter_map(|c| c.remote.parse::<IpAddr>().ok())
-                .filter(|ip| !g.whois.contains_key(ip) && !is_private(ip))
-                .filter(|ip| fails.get(ip).copied().unwrap_or(0) < MAX_RETRIES)
-                .take(8)
-                .collect()
+        fails.retain(|_, (_, at)| at.elapsed() < RETRY_AFTER);
+        let targets = {
+            let g = lock(&app);
+            whois_targets(&g, |ip| fails.get(ip).is_none_or(|(n, _)| *n < MAX_RETRIES))
         };
         // Разбираем пачкой: каждый запрос упирается в ожидание резолвера,
         // последовательно очередь из сотни адресов тянулась бы минутами.
         let done = futures_join(targets).await;
         for (ip, w) in done {
             if w.failed {
-                *fails.entry(ip).or_insert(0) += 1;
+                let e = fails.entry(ip).or_insert((0, tokio::time::Instant::now()));
+                e.0 += 1;
+                e.1 = tokio::time::Instant::now();
                 // Частичный результат применяем, но в кеш не кладем: вернемся позже.
                 if w.asn.is_none() && w.ptr.is_none() {
                     continue;
@@ -810,7 +951,7 @@ async fn whois_loop(app: Shared) {
             } else {
                 fails.remove(&ip);
             }
-            let mut g = app.lock().unwrap();
+            let mut g = lock(&app);
             if !w.failed {
                 g.whois.insert(ip, w.clone());
             }
@@ -883,22 +1024,27 @@ async fn cache_loop(app: Shared) {
     let mut round: u32 = 0;
     loop {
         tokio::time::sleep(Duration::from_secs(45)).await;
-        let disk = cache_snapshot(&app.lock().unwrap());
-        tokio::task::spawn_blocking(move || cache::save(&disk));
+        let a = app.clone();
+        tokio::task::spawn_blocking(move || cache::save(|| cache_snapshot(&lock(&a))));
 
         // Пустой ответ резолвера держим недолго: отрицательный кеш DNS живет
         // минуты, и адрес, сегодня безымянный, через пять минут имя отдает.
         round += 1;
+        let mut g = lock(&app);
         if round.is_multiple_of(8) {
-            let mut g = app.lock().unwrap();
             g.whois.retain(|_, w| w.ptr.is_some() || w.asn.is_some());
+        }
+        if g.whois.len() > state::MAX_NAMES {
+            let App { whois, store, .. } = &mut *g;
+            state::trim_ip_map(whois, &store.conns, state::MAX_NAMES);
         }
     }
 }
 
 fn cache_snapshot(g: &App) -> cache::Disk {
     cache::Disk {
-        dns: g
+        dns: HashMap::new(),
+        dns_names: g
             .store
             .dns
             .iter()
@@ -919,17 +1065,6 @@ fn cache_snapshot(g: &App) -> cache::Disk {
                 )
             })
             .collect(),
-    }
-}
-
-fn is_private(ip: &IpAddr) -> bool {
-    match ip {
-        IpAddr::V4(v4) => {
-            v4.is_private() || v4.is_loopback() || v4.is_link_local() || v4.is_unspecified()
-        }
-        IpAddr::V6(v6) => {
-            v6.is_loopback() || v6.is_unspecified() || (v6.segments()[0] & 0xfe00) == 0xfc00
-        }
     }
 }
 
@@ -968,7 +1103,7 @@ struct ProcsQuery {
 }
 
 async fn api_procs(State(app): State<Shared>, Query(q): Query<ProcsQuery>) -> impl IntoResponse {
-    let g = app.lock().unwrap();
+    let g = lock(&app);
 
     // Живые соединения по процессам - показываются счетчиком в дереве.
     let mut live: HashMap<i32, usize> = HashMap::new();
@@ -1053,6 +1188,8 @@ struct StateQuery {
     #[serde(default)]
     q: String,
     #[serde(default)]
+    proto: String,
+    #[serde(default)]
     limit: Option<usize>,
     #[serde(default)]
     show_local: Option<u8>,
@@ -1063,13 +1200,29 @@ struct StateQuery {
 struct Filter {
     only_selected: bool,
     query: String,
+    /// tcp | udp, пусто - любой
+    proto: String,
     show_local: bool,
     show_self: bool,
+}
+
+/// Неизвестное значение не должно молча давать пустую таблицу.
+fn proto_param(s: &str) -> String {
+    let s = s.to_ascii_lowercase();
+    if s == "tcp" || s == "udp" {
+        s
+    } else {
+        String::new()
+    }
 }
 
 fn conn_matches(c: &state::Conn, q: &str) -> bool {
     if q.is_empty() {
         return true;
+    }
+    // "tcp" и "udp" выбирают протокол, а не ищут подстроку в имени.
+    if q == "tcp" || q == "udp" {
+        return c.proto.eq_ignore_ascii_case(q);
     }
     c.remote.contains(q)
         || c.rport.to_string().contains(q)
@@ -1102,6 +1255,9 @@ fn select_conns<'a>(g: &'a App, f: &Filter) -> Vec<&'a state::Conn> {
         .conns
         .values()
         .filter(|c| {
+            if !f.proto.is_empty() && !c.proto.eq_ignore_ascii_case(&f.proto) {
+                return false;
+            }
             if !f.show_local && c.scope != "public" {
                 return false;
             }
@@ -1207,10 +1363,11 @@ fn aggregate(conns: &[&state::Conn]) -> Vec<Target> {
 }
 
 async fn api_state(State(app): State<Shared>, Query(q): Query<StateQuery>) -> impl IntoResponse {
-    let g = app.lock().unwrap();
+    let g = lock(&app);
     let f = Filter {
         only_selected: q.scope != "host" && g.selected.is_some(),
         query: q.q.clone(),
+        proto: proto_param(&q.proto),
         show_local: q.show_local.unwrap_or(0) == 1,
         show_self: q.show_self.unwrap_or(0) == 1,
     };
@@ -1219,6 +1376,37 @@ async fn api_state(State(app): State<Shared>, Query(q): Query<StateQuery>) -> im
 
     let attributed = picked.iter().filter(|c| c.pid.is_some()).count();
     let matched = picked.len();
+    let owned: Vec<state::Conn> = picked
+        .into_iter()
+        .take(if q.view == "agg" { usize::MAX } else { limit })
+        .cloned()
+        .collect();
+    let mut response = json!({
+        "stats": {
+            "matched": matched,
+            "stored": g.store.conns.len(),
+            "attributed": attributed,
+            "packets": g.store.packets_seen,
+            "capture": g.capture_on,
+            "dropped": g.capture_metrics.dropped.load(std::sync::atomic::Ordering::Relaxed),
+            "capture_hint": g.capture_hint.as_ref().map(|t| t.get()),
+            "elevate": g.can_elevate,
+            "iface": g.iface,
+        },
+        "dump": {
+            "running": g.dump.is_running(),
+            "busy": matches!(g.dump_phase, DumpPhase::Starting | DumpPhase::Finishing),
+            "result": g.dump_outcome,
+            "path": g.dump.path,
+            "started": g.dump.started_ms,
+            "only": g.dump_meta.as_ref().is_some_and(|m| m.only_group),
+            "auto_stopped": g.auto_stopped,
+        },
+        "group": g.group,
+        "selected": g.selected,
+    });
+    drop(g);
+    let picked: Vec<&state::Conn> = owned.iter().collect();
     let (rows, targets, shown) = if q.view == "agg" {
         let all = aggregate(&picked);
         let total_targets = all.len();
@@ -1235,32 +1423,10 @@ async fn api_state(State(app): State<Shared>, Query(q): Query<StateQuery>) -> im
         (json!(head), json!(null), shown)
     };
 
-    Json(json!({
-        "conns": rows,
-        "targets": targets,
-        "stats": {
-            "matched": matched,
-            "shown": shown,
-            "stored": g.store.conns.len(),
-            "attributed": attributed,
-            "packets": g.store.packets_seen,
-            "capture": g.capture_on,
-            "capture_hint": g.capture_hint.as_ref().map(|t| t.get()),
-            "elevate": g.can_elevate,
-            "iface": g.iface,
-        },
-        "dump": {
-            "running": g.dump.is_running(),
-            "busy": matches!(g.dump_phase, DumpPhase::Starting | DumpPhase::Finishing),
-            "result": g.dump_outcome,
-            "path": g.dump.path,
-            "started": g.dump.started_ms,
-            "only": g.dump_meta.as_ref().is_some_and(|m| m.only_group),
-            "auto_stopped": g.auto_stopped,
-        },
-        "group": g.group,
-        "selected": g.selected,
-    }))
+    response["conns"] = rows;
+    response["targets"] = targets;
+    response["stats"]["shown"] = json!(shown);
+    Json(response)
 }
 
 #[derive(Deserialize)]
@@ -1269,8 +1435,14 @@ struct SelectBody {
 }
 
 async fn api_select(State(app): State<Shared>, Json(b): Json<SelectBody>) -> impl IntoResponse {
-    let mut g = app.lock().unwrap();
+    let mut g = lock(&app);
     g.selected = b.pid;
+    g.selected_instance = b.pid.and_then(|pid| {
+        g.procs
+            .iter()
+            .find(|p| p.pid == pid)
+            .map(ProcInfo::identity)
+    });
     g.group = match b.pid {
         Some(pid) => procs::descendants(&g.procs, pid),
         None => Vec::new(),
@@ -1291,9 +1463,27 @@ async fn api_dump_start(State(app): State<Shared>, Json(b): Json<DumpBody>) -> i
     Json(result)
 }
 
+/// Имя exe бывает до 255 байт, с суффиксом это ENAMETOOLONG. Предел файловой
+/// системы считается в байтах, поэтому и обрезка по байтам.
+fn dump_file_stem(name: &str) -> String {
+    let mut out = String::new();
+    for c in name.chars() {
+        let c = if c.is_alphanumeric() || c == '.' || c == '-' {
+            c
+        } else {
+            '_'
+        };
+        if out.len() + c.len_utf8() > 64 {
+            break;
+        }
+        out.push(c);
+    }
+    out
+}
+
 async fn start_dump(app: Shared, filtered: bool) -> serde_json::Value {
-    let (mut dump, iface, name, process, pids) = {
-        let mut g = app.lock().unwrap();
+    let (mut dump, iface, name, process, pids, instances, dropped_at_start) = {
+        let mut g = lock(&app);
         if g.dump_phase != DumpPhase::Idle {
             return json!({"ok": false, "error": t!(
                 "A recording is already running or being finalized",
@@ -1305,14 +1495,20 @@ async fn start_dump(app: Shared, filtered: bool) -> serde_json::Value {
                 "Packet capture is unavailable", "Пакетный захват недоступен"
             )});
         }
-        let process = g
-            .selected
-            .and_then(|pid| g.procs.iter().find(|p| p.pid == pid).cloned());
-        if filtered && process.is_none() {
+        let process = g.selected.and_then(|pid| {
+            g.procs
+                .iter()
+                .find(|p| p.pid == pid && Some(p.identity()) == g.selected_instance)
+                .cloned()
+        });
+        if filtered && process.as_ref().is_none_or(|p| p.started == 0) {
             return json!({"ok": false, "error": t!(
                 "Select a running process before recording its traffic",
                 "Перед записью трафика выберите работающий процесс"
             )});
+        }
+        if g.group.len() > MAX_DUMP_PROCS {
+            return json!({"ok":false,"error":t!("The process group exceeds the recording metadata limit", "Группа процессов превышает лимит метаданных записи")});
         }
         let name = process
             .as_ref()
@@ -1325,18 +1521,17 @@ async fn start_dump(app: Shared, filtered: bool) -> serde_json::Value {
             name,
             process,
             g.group.iter().copied().collect(),
+            g.procs
+                .iter()
+                .filter(|p| g.group.contains(&p.pid) && p.started != 0)
+                .map(ProcInfo::identity)
+                .collect(),
+            g.capture_metrics
+                .dropped
+                .load(std::sync::atomic::Ordering::Relaxed),
         )
     };
-    let safe: String = name
-        .chars()
-        .map(|c| {
-            if c.is_alphanumeric() || c == '.' || c == '-' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect();
+    let safe = dump_file_stem(&name);
     let dir = dirs_dumps();
     let suffix = std::time::SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1347,7 +1542,7 @@ async fn start_dump(app: Shared, filtered: bool) -> serde_json::Value {
         Ok(()) => dump.start(&iface, &path).await,
         Err(e) => Err(e),
     };
-    let mut g = app.lock().unwrap();
+    let mut g = lock(&app);
     g.dump = dump;
     if let Err(e) = result {
         g.dump_phase = DumpPhase::Idle;
@@ -1359,6 +1554,9 @@ async fn start_dump(app: Shared, filtered: bool) -> serde_json::Value {
         process,
         only_group: filtered,
         pids,
+        instances,
+        limit_reached: false,
+        dropped_at_start,
         started: t,
         last_alive: t,
         conns: HashMap::new(),
@@ -1378,9 +1576,21 @@ async fn api_dump_stop(State(app): State<Shared>) -> impl IntoResponse {
 }
 
 /// Завершение держит фазу Finishing до остановки захвата и обработки файла.
+async fn wait_packet_accounting(metrics: &capture::Metrics) -> bool {
+    let target = metrics.accepted.load(std::sync::atomic::Ordering::Acquire);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    while metrics.processed.load(std::sync::atomic::Ordering::Acquire) < target {
+        if tokio::time::Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    true
+}
+
 async fn finish_dump(app: &Shared, automatic: bool) -> DumpOutcome {
-    let (mut dump, meta) = {
-        let mut g = app.lock().unwrap();
+    let (mut dump, mut meta) = {
+        let mut g = lock(app);
         if g.dump_phase != DumpPhase::Recording {
             return if automatic {
                 DumpOutcome::default()
@@ -1396,7 +1606,8 @@ async fn finish_dump(app: &Shared, automatic: bool) -> DumpOutcome {
             let idle = g.dump_meta.as_ref().is_some_and(|m| {
                 m.only_group && state::now_ms().saturating_sub(m.last_alive) > DUMP_IDLE_MS
             });
-            if !failed && !idle {
+            let capped = g.dump_meta.as_ref().is_some_and(|m| m.limit_reached);
+            if !failed && !idle && !capped {
                 return DumpOutcome::default();
             }
         }
@@ -1407,17 +1618,50 @@ async fn finish_dump(app: &Shared, automatic: bool) -> DumpOutcome {
         (dump, g.dump_meta.take())
     };
     let stopped = dump.stop().await;
+    let metrics = lock(app).capture_metrics.clone();
+    let accounted = wait_packet_accounting(&metrics).await;
+    if let Some(m) = meta.as_mut() {
+        for (key, conn) in &lock(app).store.conns {
+            remember_dump_conn(m, *key, conn);
+        }
+    }
+
     let path = dump.path.clone();
     let mut outcome = DumpOutcome {
         path: path.clone(),
         ..DumpOutcome::default()
     };
     let mut errors = Vec::new();
+    if !accounted {
+        errors.push(t!(
+            "Packet accounting did not finish",
+            "Пакетный учет не завершился"
+        ));
+    }
+    if let Some(m) = &meta {
+        if m.limit_reached {
+            errors.push(t!(
+                "Recording stopped at the metadata limit",
+                "Запись остановлена по лимиту метаданных"
+            ));
+        }
+        if lock(app)
+            .capture_metrics
+            .dropped
+            .load(std::sync::atomic::Ordering::Relaxed)
+            > m.dropped_at_start
+        {
+            errors.push(t!(
+                "Packet tracking lost data during recording",
+                "При записи потеряны данные пакетного учета"
+            ));
+        }
+    }
     if let Err(e) = stopped {
         errors.push(e.to_string());
     }
     if let (Some(p), Some(m)) = (&path, &meta) {
-        let (plan, info) = dump_plan(&app.lock().unwrap(), m, p);
+        let (plan, info) = dump_plan(&lock(app), m, p);
         let file = p.clone();
         let only_group = m.only_group;
         let capture_complete = errors.is_empty();
@@ -1451,7 +1695,7 @@ async fn finish_dump(app: &Shared, automatic: bool) -> DumpOutcome {
     if !outcome.ok {
         outcome.error = Some(errors.join("; "));
     }
-    let mut g = app.lock().unwrap();
+    let mut g = lock(app);
     g.dump = dump;
     g.dump_phase = DumpPhase::Idle;
     if automatic {
@@ -1469,7 +1713,14 @@ fn process_dump_file(
     capture_complete: bool,
 ) -> (Option<String>, bool, Vec<String>) {
     let mut errors = Vec::new();
-    let filtered = match plan.rewrite(path) {
+    let filtered = match if only_group && !capture_complete {
+        Err(std::io::Error::other(t!(
+            "Ownership data is incomplete",
+            "Данные владения неполны"
+        )))
+    } else {
+        plan.rewrite(path)
+    } {
         Ok(st) => {
             info["packets"] = json!({"total": st.packets, "kept": st.kept, "labeled": st.labeled});
             true
@@ -1513,7 +1764,7 @@ fn process_dump_file(
 /// Соединения за время записи: владелец и домен для подписи пакетов, отбор
 /// трафика группы и карта для .json.
 fn dump_plan(g: &App, m: &DumpMeta, path: &str) -> (annotate::Plan, serde_json::Value) {
-    let mine = |c: &state::Conn| c.pid.is_some_and(|p| m.pids.contains(&p));
+    let mine = |c: &state::Conn| dump_owns(m, c);
     let mut recorded = m.conns.clone();
     for (key, c) in &g.store.conns {
         if c.last_seen < m.started {
@@ -1595,13 +1846,23 @@ fn record_dump_conn(g: &mut App, key: &state::ConnKey) {
     remember_dump_conn(m, *key, c);
 }
 
+fn dump_owns(m: &DumpMeta, c: &state::Conn) -> bool {
+    c.pid
+        .zip(c.owner_started)
+        .is_some_and(|(pid, started)| m.instances.contains(&procs::Identity { pid, started }))
+}
+
 fn remember_dump_conn(m: &mut DumpMeta, key: state::ConnKey, c: &state::Conn) {
     if c.last_seen < m.started {
         return;
     }
     if let Some(old) = m.conns.get_mut(&key) {
         old.update_recording(c);
-    } else if !m.only_group || c.pid.is_some_and(|p| m.pids.contains(&p)) {
+    } else if !m.only_group || dump_owns(m, c) {
+        if m.conns.len() >= MAX_DUMP_CONNS {
+            m.limit_reached = true;
+            return;
+        }
         m.conns.insert(key, c.clone());
     }
 }
@@ -1621,18 +1882,28 @@ fn track_dump(g: &mut App, list: &[ProcInfo]) {
     let Some(m) = g.dump_meta.as_mut() else {
         return;
     };
-    let Some(root) = m.process.as_ref().map(|p| p.pid) else {
+    let Some(_) = &m.process else {
         return;
     };
-    let live: HashSet<i32> = list.iter().map(|p| p.pid).collect();
-    let roots: Vec<i32> = std::iter::once(root)
-        .chain(m.pids.iter().copied().filter(|p| live.contains(p)))
+    let live: HashMap<i32, &ProcInfo> = list.iter().map(|p| (p.pid, p)).collect();
+    let roots: Vec<i32> = m
+        .instances
+        .iter()
+        .filter(|id| live.get(&id.pid).is_some_and(|p| p.identity() == **id))
+        .map(|id| id.pid)
         .collect();
-    for r in roots {
-        m.pids.extend(procs::descendants(list, r));
-    }
-    if m.pids.iter().any(|p| live.contains(p)) {
+    if !roots.is_empty() {
         m.last_alive = state::now_ms();
+    }
+    for pid in procs::descendants_from(list, roots) {
+        if let Some(p) = live.get(&pid).filter(|p| p.started != 0) {
+            if !m.instances.contains(&p.identity()) && m.instances.len() >= MAX_DUMP_PROCS {
+                m.limit_reached = true;
+                return;
+            }
+            m.instances.insert(p.identity());
+            m.pids.insert(pid);
+        }
     }
 }
 
@@ -1684,7 +1955,7 @@ async fn api_reveal() -> impl IntoResponse {
 }
 
 async fn api_clear(State(app): State<Shared>) -> impl IntoResponse {
-    let mut g = app.lock().unwrap();
+    let mut g = lock(&app);
     g.store.conns.clear();
     g.store.packets_seen = 0;
     Json(json!({ "ok": true }))
@@ -1696,23 +1967,36 @@ struct ExportQuery {
     format: String,
     #[serde(default)]
     scope: String,
+    #[serde(default)]
+    q: String,
+    #[serde(default)]
+    proto: String,
 }
 
 async fn api_export(State(app): State<Shared>, Query(q): Query<ExportQuery>) -> impl IntoResponse {
-    let g = app.lock().unwrap();
+    let g = lock(&app);
     let f = Filter {
         only_selected: q.scope != "host" && g.selected.is_some(),
-        query: String::new(),
+        query: q.q.clone(),
+        proto: proto_param(&q.proto),
         show_local: true,
         show_self: false,
     };
     let mut conns: Vec<state::Conn> = select_conns(&g, &f).into_iter().cloned().collect();
+    let pname = match g.selected.filter(|_| f.only_selected) {
+        Some(pid) => g.procs.iter().find(|p| p.pid == pid).map_or_else(
+            || format!("pid {pid}"),
+            |p| format!("{} (pid {})", p.name, p.pid),
+        ),
+        None => t!("whole host", "весь хост"),
+    };
+    let group = if f.only_selected {
+        g.group.clone()
+    } else {
+        Vec::new()
+    };
+    drop(g);
     conns.sort_by_key(|a| a.first_seen);
-    let pname = g
-        .selected
-        .and_then(|pid| g.procs.iter().find(|p| p.pid == pid))
-        .map(|p| format!("{} (pid {})", p.name, p.pid))
-        .unwrap_or_else(|| t!("whole host", "весь хост"));
     let now = human_time(state::now_ms());
 
     if q.format == "html" {
@@ -1740,7 +2024,7 @@ async fn api_export(State(app): State<Shared>, Query(q): Query<ExportQuery>) -> 
     let body = serde_json::to_string_pretty(&json!({
         "generated": now,
         "process": pname,
-        "group": g.group,
+        "group": group,
         "conns": conns,
     }))
     .unwrap_or_default();
@@ -1846,12 +2130,47 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn guard_rejects_foreign_hosts_origins_and_cross_site_reads() {
+        let req = |method: Method, pairs: &[(&'static str, &str)]| {
+            let mut h = axum::http::HeaderMap::new();
+            for (k, v) in pairs {
+                h.insert(*k, v.parse().unwrap());
+            }
+            request_allowed(8787, &method, &h)
+        };
+        let host = ("host", "127.0.0.1:8787");
+        assert!(req(Method::GET, &[host]));
+        assert!(req(
+            Method::GET,
+            &[("host", "localhost:8787"), ("sec-fetch-site", "none")]
+        ));
+        assert!(req(Method::GET, &[host, ("sec-fetch-site", "same-origin")]));
+        assert!(!req(Method::GET, &[("host", "attacker.example:8787")]));
+        assert!(!req(Method::GET, &[]));
+        assert!(!req(Method::GET, &[host, ("sec-fetch-site", "cross-site")]));
+        assert!(!req(Method::GET, &[host, ("sec-fetch-site", "same-site")]));
+        assert!(req(
+            Method::POST,
+            &[host, ("origin", "http://127.0.0.1:8787")]
+        ));
+        assert!(!req(
+            Method::POST,
+            &[host, ("origin", "http://127.0.0.1:9000")]
+        ));
+        assert!(!req(
+            Method::POST,
+            &[host, ("origin", "https://attacker.example")]
+        ));
+    }
     use crate::pcap::Packet;
     use crate::sockets::{Proto, SockEntry};
 
     fn app() -> App {
         let process = ProcInfo {
             pid: 100,
+            started: 1,
             ppid: 0,
             comm: "demo".into(),
             name: "DemoGame.exe".into(),
@@ -1865,6 +2184,8 @@ mod tests {
             procs: vec![process.clone()],
             active_pids: HashSet::new(),
             selected: Some(100),
+            selected_instance: Some(process.identity()),
+            capture_metrics: Arc::default(),
             group: vec![100],
             dump: capture::Dump::default(),
             dump_phase: DumpPhase::Idle,
@@ -1873,6 +2194,12 @@ mod tests {
                 process: Some(process),
                 only_group: true,
                 pids: HashSet::from([100]),
+                instances: HashSet::from([procs::Identity {
+                    pid: 100,
+                    started: 1,
+                }]),
+                limit_reached: false,
+                dropped_at_start: 0,
                 started: 0,
                 last_alive: 0,
                 conns: HashMap::new(),
@@ -1899,6 +2226,7 @@ mod tests {
             rport: 0,
             state: "UNCONNECTED",
             pid: Some(100),
+            ambiguous: false,
             cookie: Some(cookie),
         }
     }
@@ -1913,19 +2241,20 @@ mod tests {
             bytes: 128,
             sni: None,
             dns_addrs: Vec::new(),
-            dns_cnames: Vec::new(),
         }
     }
 
     #[test]
     fn selected_process_does_not_include_unknown_traffic_to_a_shared_host() {
         let mut g = app();
-        g.store.apply_sockets(&[socket(1)], &HashMap::new());
+        g.store
+            .apply_sockets(&[socket(1)], &HashMap::from([(100, &g.procs[0])]));
         g.store.apply_packet(&packet(40000));
         g.store.apply_packet(&packet(40001));
         let filter = Filter {
             only_selected: true,
             query: String::new(),
+            proto: String::new(),
             show_local: true,
             show_self: true,
         };
@@ -1947,9 +2276,68 @@ mod tests {
     }
 
     #[test]
+    fn whois_targets_are_public_and_unique() {
+        let mut g = app();
+        for port in 40000..40003 {
+            g.store.apply_packet(&packet(port));
+        }
+        for dst in [
+            "224.0.0.251",
+            "255.255.255.255",
+            "10.0.0.1",
+            "fe80::1",
+            "fec0::1",
+            "0.0.0.0",
+            "100.64.0.1",
+            "240.0.0.1",
+        ] {
+            g.store.apply_packet(&Packet {
+                dst: dst.parse().unwrap(),
+                ..packet(40010)
+            });
+        }
+        let public: IpAddr = "198.51.100.20".parse().unwrap();
+        assert_eq!(whois_targets(&g, |_| true), [public]);
+        assert!(whois_targets(&g, |_| false).is_empty());
+        g.whois.insert(public, resolve::Whois::default());
+        assert!(whois_targets(&g, |_| true).is_empty());
+    }
+
+    #[test]
+    fn protocol_filter_and_search_pick_tcp_or_udp() {
+        let mut g = app();
+        g.store.apply_packet(&packet(40000));
+        g.store.apply_packet(&Packet {
+            proto: Proto::Tcp,
+            dport: 443,
+            ..packet(40001)
+        });
+        for c in g.store.conns.values_mut().filter(|c| c.proto == "TCP") {
+            c.domain = Some("udp.example.com".into());
+        }
+        let filter = |proto: &str, query: &str| Filter {
+            only_selected: false,
+            query: query.into(),
+            proto: proto.into(),
+            show_local: true,
+            show_self: true,
+        };
+        let protos =
+            |f: Filter| -> Vec<&str> { select_conns(&g, &f).iter().map(|c| c.proto).collect() };
+        assert_eq!(protos(filter("", "")).len(), 2);
+        assert_eq!(protos(filter("tcp", "")), ["TCP"]);
+        assert_eq!(protos(filter("udp", "")), ["UDP"]);
+        assert_eq!(protos(filter("", "udp")), ["UDP"]);
+        assert!(protos(filter("tcp", "udp")).is_empty());
+        assert_eq!(protos(filter("", "udp.example")), ["TCP"]);
+        assert_eq!(protos(filter(&proto_param("ICMP"), "")).len(), 2);
+    }
+
+    #[test]
     fn recording_remembers_proven_flows_after_live_history_is_cleared() {
         let mut g = app();
-        g.store.apply_sockets(&[socket(1)], &HashMap::new());
+        g.store
+            .apply_sockets(&[socket(1)], &HashMap::from([(100, &g.procs[0])]));
         let key = g.store.apply_packet(&packet(40000));
         record_dump_conn(&mut g, &key);
         g.store.conns.clear();
@@ -1963,10 +2351,12 @@ mod tests {
     #[test]
     fn recording_does_not_restore_a_disputed_tuple_after_history_clear() {
         let mut g = app();
-        g.store.apply_sockets(&[socket(1)], &HashMap::new());
+        g.store
+            .apply_sockets(&[socket(1)], &HashMap::from([(100, &g.procs[0])]));
         let key = g.store.apply_packet(&packet(40000));
         record_dump_conn(&mut g, &key);
-        g.store.apply_sockets(&[socket(2)], &HashMap::new());
+        g.store
+            .apply_sockets(&[socket(2)], &HashMap::from([(100, &g.procs[0])]));
         g.store.apply_packet(&packet(40000));
         record_dump(&mut g);
         g.store.conns.clear();
@@ -1994,7 +2384,7 @@ mod tests {
             let shared = Arc::new(Mutex::new(g));
             let result = start_dump(shared.clone(), false).await;
             assert_eq!(result["ok"], false);
-            let g = shared.lock().unwrap();
+            let g = lock(&shared);
             assert!(g.dump_phase == phase);
             assert_eq!(g.dump.path.as_deref(), Some("demo.pcapng"));
             assert_eq!(g.dump_meta.as_ref().unwrap().started, 123);
@@ -2012,7 +2402,7 @@ mod tests {
             let result = finish_dump(&shared, false).await;
             assert!(!result.ok);
             assert!(result.error.is_some());
-            let g = shared.lock().unwrap();
+            let g = lock(&shared);
             assert!(g.dump_phase == phase);
             assert_eq!(g.dump.path.as_deref(), Some("demo.pcapng"));
         }
@@ -2022,7 +2412,7 @@ mod tests {
     async fn start_without_live_capture_returns_an_error() {
         let shared = Arc::new(Mutex::new(app()));
         assert_eq!(start_dump(shared.clone(), false).await["ok"], false);
-        assert!(shared.lock().unwrap().dump_phase == DumpPhase::Idle);
+        assert!(lock(&shared).dump_phase == DumpPhase::Idle);
     }
 
     #[tokio::test]
@@ -2032,7 +2422,42 @@ mod tests {
         g.selected = Some(200);
         let shared = Arc::new(Mutex::new(g));
         assert_eq!(start_dump(shared.clone(), true).await["ok"], false);
-        assert!(shared.lock().unwrap().dump_phase == DumpPhase::Idle);
+        assert!(lock(&shared).dump_phase == DumpPhase::Idle);
+    }
+
+    #[test]
+    fn dump_name_is_cut_by_bytes_at_a_char_boundary() {
+        assert_eq!(dump_file_stem("Demo Game/x.exe"), "Demo_Game_x.exe");
+        let stem = dump_file_stem(&"игра".repeat(40));
+        assert_eq!(stem.len(), 64);
+        assert_eq!(stem, "игра".repeat(8));
+        let stem = dump_file_stem(&format!("a{}", "я".repeat(40)));
+        assert_eq!(stem.len(), 63);
+    }
+
+    async fn export_json(app: &Shared, scope: &str) -> serde_json::Value {
+        let q = ExportQuery {
+            format: "json".into(),
+            scope: scope.into(),
+            q: String::new(),
+            proto: String::new(),
+        };
+        let body = api_export(State(app.clone()), Query(q))
+            .await
+            .into_response()
+            .into_body();
+        serde_json::from_slice(&axum::body::to_bytes(body, usize::MAX).await.unwrap()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn host_export_is_not_titled_with_the_selected_process() {
+        let shared = Arc::new(Mutex::new(app()));
+        let host = export_json(&shared, "host").await;
+        assert_eq!(host["process"], t!("whole host", "весь хост"));
+        assert_eq!(host["group"], json!([]));
+        let own = export_json(&shared, "proc").await;
+        assert_eq!(own["process"], "DemoGame.exe (pid 100)");
+        assert_eq!(own["group"], json!([100]));
     }
 
     fn empty_pcapng() -> Vec<u8> {
@@ -2109,5 +2534,103 @@ mod tests {
         assert!(sidecar.is_none());
         assert!(!unfiltered);
         assert!(!errors.is_empty());
+    }
+    #[test]
+    fn recording_rejects_reused_pid_and_its_new_children() {
+        let mut g = app();
+        let mut foreign = g.procs[0].clone();
+        foreign.started = 2;
+        let mut child = foreign.clone();
+        child.pid = 101;
+        child.ppid = 100;
+        track_dump(&mut g, &[foreign.clone(), child]);
+        let m = g.dump_meta.as_ref().unwrap();
+        assert_eq!(m.instances.len(), 1);
+        assert!(!m.pids.contains(&101));
+        assert_eq!(m.last_alive, 0);
+        g.store
+            .apply_sockets(&[socket(1)], &HashMap::from([(100, &foreign)]));
+        let k = g.store.apply_packet(&packet(40000));
+        record_dump(&mut g);
+        let m = g.dump_meta.as_ref().unwrap();
+        assert!(!dump_owns(m, &g.store.conns[&k]));
+        assert!(m.conns.is_empty());
+        assert!(!dump_plan(&g, m, "demo.pcapng").0.owners[&k].keep);
+    }
+    #[test]
+    fn recording_metadata_limit_is_explicit_and_bounded() {
+        let mut g = app();
+        let key = g.store.apply_packet(&packet(40000));
+        let c = g.store.conns[&key].clone();
+        let m = g.dump_meta.as_mut().unwrap();
+        m.only_group = false;
+        for port in 0..MAX_DUMP_CONNS {
+            let mut k = key;
+            k.lport = port as u16;
+            remember_dump_conn(m, k, &c);
+        }
+        assert_eq!(m.conns.len(), MAX_DUMP_CONNS);
+        assert!(!m.limit_reached);
+        let mut extra = key;
+        extra.lport = 60000;
+        remember_dump_conn(m, extra, &c);
+        assert!(m.limit_reached);
+        assert_eq!(m.conns.len(), MAX_DUMP_CONNS);
+    }
+    #[test]
+    fn incomplete_ownership_preserves_raw_process_dump() {
+        let dir = paths::TestDir::new("incomplete-ownership");
+        let path = dir.0.join("demo.pcapng");
+        let original = b"raw capture";
+        std::fs::write(&path, original).unwrap();
+        let plan = annotate::Plan {
+            owners: HashMap::new(),
+            only_group: true,
+            comment: "demo".into(),
+        };
+        let (sidecar, unfiltered, errors) =
+            process_dump_file(plan, json!({}), path.to_str().unwrap(), true, false);
+        assert!(unfiltered && !errors.is_empty());
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        let info: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(sidecar.unwrap()).unwrap()).unwrap();
+        assert_eq!(info["processing"]["capture_complete"], false);
+        assert_eq!(info["only_process"], false);
+    }
+    #[tokio::test]
+    async fn finalization_waits_for_already_accepted_packets() {
+        let metrics = Arc::new(capture::Metrics::default());
+        metrics
+            .accepted
+            .store(3, std::sync::atomic::Ordering::Release);
+        let applying = metrics.clone();
+        let task = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            applying
+                .processed
+                .store(3, std::sync::atomic::Ordering::Release);
+        });
+        assert!(wait_packet_accounting(&metrics).await);
+        task.await.unwrap();
+    }
+    #[test]
+    fn selection_is_cleared_when_a_different_process_reuses_the_pid() {
+        let mut g = app();
+        let mut new_process = g.procs[0].clone();
+        new_process.started += 1;
+        refresh_selected_group(&mut g, &[new_process], false);
+        assert!(g.selected.is_none() && g.selected_instance.is_none() && g.group.is_empty());
+    }
+    #[tokio::test]
+    async fn oversized_group_is_rejected_before_starting_capture() {
+        let mut g = app();
+        g.capture_on = true;
+        g.dump_meta = None;
+        g.group = (0..MAX_DUMP_PROCS as i32 + 1).collect();
+        let app = Arc::new(Mutex::new(g));
+        let result = start_dump(app.clone(), true).await;
+        assert_eq!(result["ok"], false);
+        assert!(lock(&app).dump_phase == DumpPhase::Idle);
+        assert!(lock(&app).dump.path.is_none());
     }
 }

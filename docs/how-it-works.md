@@ -66,6 +66,12 @@ For TCP, a changed inode or PID, or reopening an observed closed tuple, disputes
 the combined history. Counters remain, but the process identity and previous SNI
 are cleared. Such a tuple is excluded from process-scoped views and dumps.
 
+Process identity includes the start time, not just the PID. A reused PID cannot
+join an existing recording group or keep its old selection. The selected and
+recorded processes are checked on each poll. When multiple Linux processes hold
+one inode, its owner stays ambiguous, including after a partial scan; the Wine
+copy in `wineserver` remains a special case.
+
 ## Packets
 
 On Linux `dumpcap` from Wireshark writes a pcapng stream to stdout, and SocketTrail
@@ -93,6 +99,19 @@ several packets and shuffles the frames, so the pieces are put together by offse
 each connection. With Encrypted Client Hello (ECH), in TLS and QUIC alike, only the
 outer SNI is visible: the provider's public name, for example `cloudflare-ech.com`.
 
+TLS ClientHello is assembled across TCP segments and TLS records, with reordered
+segments, retransmissions and sequence-number wrap supported. Each direction has
+at most 32 KiB of stream data and a 16 KiB handshake; at most 256 streams are kept,
+with a 10-second idle lifetime. QUIC reconstructs truncated packet numbers before
+decryption. Ethernet VLAN/QinQ and IPv6 hop-by-hop, routing, destination, AH and
+initial fragment headers are parsed. IP fragments are not reassembled.
+
+The live capture keeps full frames. Packet accounting has a queue of 8192 decoded
+packets. On Windows an ETW callback only copies into a 256-event queue; a worker
+parses and writes frames, and recording controls use the same queue. PktMon startup
+no longer stops another program's capture; an occupied capture is a startup error.
+Overload losses appear in API statistics and the capture indicator's tooltip.
+
 Noninitial IPv4 fragments are not parsed as TCP/UDP because they have no transport
 header. IP fragments are not reassembled, so counters for fragmented traffic can
 be incomplete. A whole-host dump retains all frames; a process dump excludes
@@ -101,15 +120,27 @@ fragments whose ownership cannot be confirmed.
 ## Names and network owners
 
 Names come from SNI, DNS responses, PTR and labels for special addresses, in this order
-of reliability. PTR is requested through `resolvectl` with `dig` as a fallback, on
-Windows through `DnsQuery_W`. Found names are saved to `names.json` in the cache
+of reliability. An address behind a CNAME chain gets the name that was queried, not
+the CDN node at the end of the chain. PTR is requested through `resolvectl` with `dig`
+as a fallback, on Windows through `DnsQuery_W`. Found names are saved to `names.json` in the cache
 directory: a DNS response is seen only once, and without the cache a connection opened
 before SocketTrail started would stay nameless after a restart.
+
+DNS names expire according to their record TTL (capped at one day). Up to eight
+names per IP are kept; simultaneous names or overflow make a new connection's DNS
+name ambiguous. An existing connection keeps its first DNS name until SNI replaces
+it. The disk cache retains expiration and ambiguity; legacy DNS entries without TTL
+are not restored. DNS still suggests a name for an IP and does not prove the name
+of a particular connection or process.
 
 The network owner is the ASN from [Team Cymru](https://www.team-cymru.com/ip-asn-mapping),
 requested as a DNS TXT record from `origin.asn.cymru.com`. PTR and ASN often disagree,
 for example a PTR of a hosting company on a Cloudflare network, so both are kept.
-Addresses are looked up in the background a few at a time, with a cache.
+Addresses are looked up in the background a few at a time, with a cache. Only public
+addresses are looked up: for private, link-local, CGNAT (`100.64.0.0/10`, Tailscale
+among others) and reserved addresses the request would reveal your own network to an
+outside resolver. A delegated reverse zone (RFC 2317) is not taken for a PTR name, and
+when Team Cymru lists several origin ASNs, the first one is shown.
 
 ## Dumps
 
@@ -140,6 +171,19 @@ The JSON map distinguishes `requested_only_process` from the actual `only_proces
 `processing` includes the processing status and whether capture ended cleanly
 (`capture_complete`).
 
+Recording metadata is limited to 40,000 connection tuples and 4096 process
+instances. Reaching a limit stops recording with an error. Finalization waits up
+to two seconds for already accepted packets to be accounted for. Tracking losses
+or incomplete ownership preserve a process dump as unfiltered, with an error and
+`capture_complete: false`; truncated blocks and mismatched pcapng lengths leave
+the original file intact.
+
+History still combines repeated lifetimes of one tuple conservatively, and its
+timestamps reflect observation rather than wire capture time. Separating these
+lifetimes and correlating by capture timestamps remain future engine work. When
+both endpoints belong to this host, packets count as outgoing on the sending
+endpoint; receive counters of the other local endpoint are not mirrored.
+
 ## Local interface
 
 The interface is one HTML file embedded into the binary and served by a built-in HTTP
@@ -161,6 +205,7 @@ only the channel is used.
 | `src/procs/` | process inventory: `/proc` on Linux with Proton detection, Toolhelp32 on Windows; descendant tree |
 | `src/sockets/` | socket snapshot: `/proc/net/*` and inode -> PID on Linux, IP Helper tables on Windows |
 | `src/pcap.rs` | pcapng stream parsing, SNI from the TLS ClientHello, DNS responses |
+| `src/tls.rs` | bounded TCP/TLS ClientHello reassembly |
 | `src/quic.rs` | SNI from QUIC Initial: keys, decryption, reassembly of the ClientHello |
 | `src/capture/` | platform capture: dumpcap on Linux, own PktMon/ETW engine on Windows |
 | `src/etw.rs` | Windows: capture through PktMon and ETW, `.pcapng` writing |

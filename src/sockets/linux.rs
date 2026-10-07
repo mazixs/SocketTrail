@@ -88,6 +88,7 @@ fn parse_table(path: &str, proto: Proto, out: &mut Vec<(SockEntry, u64)>) {
                 rport,
                 state,
                 pid: None,
+                ambiguous: false,
                 cookie: (inode != 0).then_some(inode),
             },
             inode,
@@ -142,7 +143,10 @@ pub fn snapshot(scan_pids: &[i32]) -> Vec<SockEntry> {
     let owners = inode_owners(scan_pids);
     raw.into_iter()
         .map(|(mut s, ino)| {
-            s.pid = owners.get(&ino).copied();
+            if let Some(pids) = owners.get(&ino) {
+                s.ambiguous = pids.len() > 1;
+                s.pid = (pids.len() == 1).then(|| *pids.iter().next().unwrap());
+            }
             s
         })
         .collect()
@@ -150,8 +154,8 @@ pub fn snapshot(scan_pids: &[i32]) -> Vec<SockEntry> {
 
 /// inode сокета -> PID. Файловые дескрипторы общие для всех потоков процесса,
 /// поэтому обхода /proc/<pid>/fd достаточно, в /proc/<pid>/task лезть не нужно.
-fn inode_owners(pids: &[i32]) -> HashMap<u64, i32> {
-    let mut map = HashMap::new();
+fn inode_owners(pids: &[i32]) -> HashMap<u64, HashSet<i32>> {
+    let mut map: HashMap<u64, HashSet<i32>> = HashMap::new();
     let mut wine = HashMap::new();
     for &pid in pids {
         let dir = match fs::read_dir(format!("/proc/{pid}/fd")) {
@@ -165,12 +169,14 @@ fn inode_owners(pids: &[i32]) -> HashMap<u64, i32> {
                     && let Ok(ino) = rest.trim_end_matches(']').parse::<u64>()
                 {
                     let mut is_wine = |p: i32| *wine.entry(p).or_insert_with(|| is_wineserver(p));
-                    match map.get(&ino) {
-                        Some(&prev) if is_wine(pid) && !is_wine(prev) => {}
-                        _ => {
-                            map.insert(ino, pid);
-                        }
+                    let owners = map.entry(ino).or_default();
+                    if is_wine(pid) && owners.iter().any(|&p| !is_wine(p)) {
+                        continue;
                     }
+                    if !is_wine(pid) {
+                        owners.retain(|&p| !is_wine(p));
+                    }
+                    owners.insert(pid);
                 }
             }
         }
@@ -208,5 +214,43 @@ mod tests {
             .unwrap();
         assert_eq!(s.pid, Some(pid));
         assert!(s.cookie.is_some_and(|inode| inode != 0));
+    }
+    #[test]
+    fn inherited_socket_is_shared_in_either_pid_order() {
+        use std::os::fd::AsRawFd;
+        use std::os::unix::process::CommandExt;
+        struct Child(std::process::Child);
+        impl Drop for Child {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let fd = socket.as_raw_fd();
+        let mut command = std::process::Command::new("sleep");
+        command.arg("30");
+        // Только async-signal-safe fcntl между fork и exec.
+        unsafe {
+            command.pre_exec(move || {
+                let flags = libc::fcntl(fd, libc::F_GETFD);
+                if flags < 0 || libc::fcntl(fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC) < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        let child = Child(command.spawn().unwrap());
+        let parent = std::process::id() as i32;
+        let child_pid = child.0.id() as i32;
+        for pids in [[parent, child_pid], [child_pid, parent]] {
+            let rows = snapshot(&pids);
+            let row = rows
+                .iter()
+                .find(|s| s.proto == Proto::Udp && s.lport == socket.local_addr().unwrap().port())
+                .unwrap();
+            assert!(row.ambiguous);
+            assert!(row.pid.is_none());
+        }
     }
 }

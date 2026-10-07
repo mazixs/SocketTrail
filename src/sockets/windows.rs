@@ -140,6 +140,7 @@ pub fn snapshot(_scan_pids: &[i32]) -> Vec<SockEntry> {
                 rport: port(r.dwRemotePort),
                 state: tcp_state(r.dwState),
                 pid: owner(r.dwOwningPid),
+                ambiguous: false,
                 cookie: None,
             });
         }
@@ -154,6 +155,7 @@ pub fn snapshot(_scan_pids: &[i32]) -> Vec<SockEntry> {
                 rport: port(r.dwRemotePort),
                 state: tcp_state(r.dwState),
                 pid: owner(r.dwOwningPid),
+                ambiguous: false,
                 cookie: None,
             });
         }
@@ -170,6 +172,7 @@ pub fn snapshot(_scan_pids: &[i32]) -> Vec<SockEntry> {
                 rport: 0,
                 state: udp_state(0),
                 pid: owner(r.dwOwningPid),
+                ambiguous: false,
                 cookie: (r.liCreateTimestamp != 0).then_some(r.liCreateTimestamp as u64),
             });
         }
@@ -183,6 +186,7 @@ pub fn snapshot(_scan_pids: &[i32]) -> Vec<SockEntry> {
                 rport: 0,
                 state: udp_state(0),
                 pid: owner(r.dwOwningPid),
+                ambiguous: false,
                 cookie: None,
             });
         }
@@ -197,6 +201,7 @@ pub fn snapshot(_scan_pids: &[i32]) -> Vec<SockEntry> {
                 rport: 0,
                 state: udp_state(0),
                 pid: owner(r.dwOwningPid),
+                ambiguous: false,
                 cookie: (r.liCreateTimestamp != 0).then_some(r.liCreateTimestamp as u64),
             });
         }
@@ -210,6 +215,7 @@ pub fn snapshot(_scan_pids: &[i32]) -> Vec<SockEntry> {
                 rport: 0,
                 state: udp_state(0),
                 pid: owner(r.dwOwningPid),
+                ambiguous: false,
                 cookie: None,
             });
         }

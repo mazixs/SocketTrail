@@ -194,7 +194,10 @@ tr:hover .copy,.copy:focus-visible{opacity:1}
 .copy:hover{color:var(--accent);background:var(--line)}
 .cell{display:flex;align-items:center;gap:6px;min-width:0}
 .cell span.txt{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.proto{color:var(--dim);font-size:11px;margin-left:4px}
+.tag.p-TCP{background:color-mix(in srgb,var(--dim) 16%,transparent);color:var(--txt)}
+.tag.p-UDP{background:color-mix(in srgb,var(--warn) 18%,transparent);color:var(--warn)}
+.port{display:flex;align-items:center;gap:6px}
+.port>span:first-child{min-width:5ch}
 .empty{padding:64px 20px;text-align:center;color:var(--dim)}
 .empty h3{color:var(--txt);margin:0 0 6px;font-weight:600;font-size:15px}
 .plist .empty{padding:28px 12px}
@@ -272,7 +275,7 @@ tr:hover .copy,.copy:focus-visible{opacity:1}
         <label class="chk" title="Show SocketTrail itself and its dumpcap"><input type="checkbox" id="showself"> <span data-t>self</span></label>
       </div>
     </div>
-    <div class="plist" id="plist"></div>
+    <div class="plist" id="plist" role="tree" aria-label="Process tree"></div>
     <div class="aside-grip" id="aside-grip" title="Drag to change the width"></div>
   </aside>
 
@@ -287,8 +290,13 @@ tr:hover .copy,.copy:focus-visible{opacity:1}
         <button data-v="list" class="on" data-t>List</button>
         <button data-v="agg" data-t>By address</button>
       </div>
+      <div class="group" id="proto" role="group" aria-label="Protocol">
+        <button data-p="" class="on" data-t>All</button>
+        <button data-p="tcp">TCP</button>
+        <button data-p="udp">UDP</button>
+      </div>
       <div class="field"><svg class="ic"><use href="#i-filter"/></svg>
-        <input id="qc" placeholder="Domain, IP, port, ASN" aria-label="Connection filter"></div>
+        <input id="qc" placeholder="Domain, IP, port, ASN" title="Domain, IP, port, ASN or protocol: tcp, udp" aria-label="Connection filter"></div>
       <label class="chk"><input type="checkbox" id="showlocal"> <span data-t>local addresses</span></label>
       <label class="chk"><input type="checkbox" id="showselfc"> <span data-t>SocketTrail connections</span></label>
       <div class="spacer"></div>
@@ -321,12 +329,12 @@ tr:hover .copy,.copy:focus-visible{opacity:1}
 const $ = s => document.querySelector(s);
 const ic = id => `<svg class="ic"><use href="#i-${id}"/></svg>`;
 const state = {
-  selected:null, filter:'active', scope:'proc', view:'list',
+  selected:null, filter:'active', scope:'proc', view:'list', proto:'',
   showLocal:false, showSelf:false, dump:null, dumpBusy:false, procs:[],
   collapsed:new Set(), opened:new Set(), lastRows:[], busy:false,
 };
 
-const DEFAULT_W = {time:84,state:118,dom:230,ip:150,port:84,net:170,proc:150,tx:84,rx:84};
+const DEFAULT_W = {time:84,state:118,dom:230,ip:150,port:100,net:170,proc:150,tx:84,rx:84};
 
 /* ---------- язык: английский в разметке, русский из словаря ---------- */
 
@@ -341,19 +349,20 @@ const RU = {
   'Report': 'Отчет', 'Standalone HTML report': 'Автономный HTML-отчет', 'Export to JSON': 'Выгрузка в JSON',
   'Language': 'Язык',
   'Clear connection history': 'Очистить историю соединений', 'Clear history': 'Очистить историю',
-  'Process: name, PID, arguments': 'Процесс: имя, PID, аргументы', 'Process search': 'Поиск процесса',
+  'Process: name, PID, arguments': 'Процесс: имя, PID, аргументы', 'Process search': 'Поиск процесса', 'Process tree': 'Дерево процессов',
   'With traffic': 'С трафиком', 'All': 'Все',
   'self': 'свои', 'Show SocketTrail itself and its dumpcap': 'Показать сам SocketTrail и его dumpcap',
   'Drag to change the width': 'Потяните, чтобы изменить ширину',
   'Drag to change the width. Double click fits the content': 'Потяните, чтобы изменить ширину. Двойной клик - по содержимому',
   'Process': 'Процесс', 'Whole host': 'Весь хост', 'List': 'Список', 'By address': 'Сводка по адресам',
-  'Domain, IP, port, ASN': 'Домен, IP, порт, ASN', 'Connection filter': 'Фильтр соединений',
+  'Domain, IP, port, ASN': 'Домен, IP, порт, ASN', 'Protocol': 'Протокол',
+  'Domain, IP, port, ASN or protocol: tcp, udp': 'Домен, IP, порт, ASN или протокол: tcp, udp', 'Connection filter': 'Фильтр соединений',
   'local addresses': 'локальные адреса', 'SocketTrail connections': 'соединения SocketTrail',
   'Time': 'Время', 'State': 'Состояние', 'Domain / name': 'Домен / имя', 'Address': 'Адрес', 'Port': 'Порт',
   'Network owner': 'Владелец сети', 'Sessions': 'Сессии', 'Out': 'Исх.', 'In': 'Вх.',
   'Nothing here yet': 'Пока пусто',
   'Pick a process on the left or switch to "Whole host".': 'Выберите процесс слева или переключитесь на "Весь хост".',
-  'B': 'Б', 'KB': 'КБ', 'MB': 'МБ',
+  'B': 'Б', 'KB': 'КБ', 'MB': 'МБ', 'GB': 'ГБ',
   '<b>Restarting as administrator.</b> The window will reconnect by itself in a few seconds.':
     '<b>Перезапуск от имени администратора.</b> Окно подключится само через несколько секунд.',
   '<b>Connection to SocketTrail lost.</b> The program was closed or stopped. The table shows the last received data. Start SocketTrail again and reload the page.':
@@ -362,7 +371,8 @@ const RU = {
   'Restart failed: {e}': 'Не удалось перезапустить: {e}',
   'Copied: {w}': 'Скопировано: {w}',
   'Nothing found': 'Ничего не найдено',
-  'no name': 'имени нет', 'packets only': 'только пакеты',
+  'no name': 'имени нет', 'packets only': 'только пакеты', 'owner unknown': 'владелец неизвестен',
+  'The socket is in the table, but its process is unknown or the tuple was reused': 'Сокет есть в таблице, но процесс неизвестен или кортеж использовался повторно',
   'Caught by packet parsing, not in the socket table': 'Поймано пакетным разбором, в таблицу сокетов не попало',
   'Copy name': 'Скопировать имя', 'Copy address': 'Скопировать адрес', 'closed': 'закрыты',
   'local port {p}, last activity {t}': 'локальный порт {p}, последняя активность {t}',
@@ -370,6 +380,7 @@ const RU = {
   'Process exited, recording stopped: {p}': 'Процесс завершился, запись остановлена: {p}',
   '<b>{a}</b> addresses, <b>{c}</b> connections': '<b>{a}</b> адресов, <b>{c}</b> соединений',
   '<b>{n}</b> in view': '<b>{n}</b> в выборке', ', shown {n}': ', показано {n}',
+  'Packet tracking dropped: {n}': 'Потеряно при пакетном учете: {n}',
   'Packet capture is active': 'Пакетный захват активен', 'Packet capture unavailable': 'Пакетный захват недоступен',
   '<b>Packet capture is off.</b> {h}': '<b>Захват пакетов выключен.</b> {h}',
   'Restart as administrator': 'Перезапустить от администратора',
@@ -424,7 +435,8 @@ function applyLang(){
 }
 
 const fmtBytes = n => !n ? '-' : n < 1024 ? n + ' ' + t('B')
-  : n < 1048576 ? (n/1024).toFixed(1) + ' ' + t('KB') : (n/1048576).toFixed(2) + ' ' + t('MB');
+  : n < 1048576 ? (n/1024).toFixed(1) + ' ' + t('KB')
+  : n < 1073741824 ? (n/1048576).toFixed(2) + ' ' + t('MB') : (n/1073741824).toFixed(2) + ' ' + t('GB');
 const fmtTime = ms => new Date(ms).toLocaleTimeString(loc(), {hour12:false});
 const fmtNum = v => v.toLocaleString(loc());
 const esc = s => (s??'').replace(/[<>&"]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[c]));
@@ -501,6 +513,8 @@ async function copy(text, what){
 function loadWidths(){
   let saved = {};
   try { saved = JSON.parse(localStorage.getItem('st.widths') || '{}'); } catch(e) {}
+  // Прежняя ширина порта по умолчанию: в ней не помещается тег протокола.
+  if (saved.port === 84) delete saved.port;
   document.querySelectorAll('#tbl colgroup col').forEach(col => {
     const k = col.dataset.k;
     col.style.width = (saved[k] || DEFAULT_W[k]) + 'px';
@@ -555,7 +569,8 @@ function initResizers(){
 
 function initAsideGrip(){
   const grip = $('#aside-grip');
-  const saved = parseInt(localStorage.getItem('st.aside') || '0');
+  let saved = 0;
+  try { saved = parseInt(localStorage.getItem('st.aside') || '0'); } catch(e) {}
   if (saved) document.querySelector('.app').style.setProperty('--aside', saved + 'px');
   grip.addEventListener('mousedown', e => {
     e.preventDefault();
@@ -580,11 +595,17 @@ function initAsideGrip(){
 
 /* ---------- дерево процессов ---------- */
 
+// Номер запроса: ответ, отправленный до нового поиска или клика, не должен
+// перетирать список и выбор.
+let procSeq = 0;
+// Пока сервер не применил новый выбор, его ответы описывают прежний процесс.
+let selecting = 0;
 async function loadProcs(){
+  const seq = ++procSeq;
   const url = `/api/procs?filter=${state.filter}&q=${encodeURIComponent($('#q').value)}`
     + `&show_self=${state.showSelf ? 1 : 0}`;
   const r = await api(url);
-  if (!r) return;
+  if (!r || seq !== procSeq || selecting) return;
   state.procs = r.procs;
   state.selected = r.selected;
   renderProcs();
@@ -641,9 +662,22 @@ function renderProcs(){
   };
   for (const r of roots) walk(r, 0);
 
-  $('#plist').innerHTML = out.join('')
+  // Список перерисовывается целиком каждые 2.5 с: фокус клавиатуры
+  // переносится на ту же строку, иначе он терялся бы между нажатиями.
+  const list = $('#plist');
+  const had = list.contains(document.activeElement) ? document.activeElement : null;
+  const key = had && procKey(had);
+  list.innerHTML = out.join('')
     || `<div class="empty">${t('Nothing found')}</div>`;
+  const rows = [...list.querySelectorAll('.proc')];
+  const cur = (key && rows.find(r => procKey(r) === key)) || list.querySelector('.proc.sel') || rows[0];
+  if (cur){
+    cur.tabIndex = 0;
+    if (had) cur.focus({preventScroll: true});
+  }
 }
+
+const procKey = el => el.dataset.pid || el.dataset.group;
 
 function rowHtml(p, depth, nkids, collapsed){
   const sel = p.pid === state.selected ? ' sel' : '';
@@ -652,7 +686,9 @@ function rowHtml(p, depth, nkids, collapsed){
                    : '<span class="twist leaf"></span>';
   const conns = p.conns ? `<span class="badge live">${p.conns}</span>`
     : (nkids && collapsed ? `<span class="badge">${nkids}</span>` : '');
+  const exp = nkids ? ` aria-expanded="${!collapsed}"` : '';
   return `<div class="proc${sel}${faint}" data-pid="${p.pid}" title="${esc(p.cmdline || p.name)}"
+    role="treeitem" tabindex="-1" aria-level="${depth + 1}" aria-selected="${!!sel}"${exp}
     style="padding-left:${4 + depth * 14}px">
     ${tw}<span class="led ${p.active ? 'on' : ''}"></span>
     <span class="nm">${esc(p.name)}</span>
@@ -662,7 +698,8 @@ function rowHtml(p, depth, nkids, collapsed){
 
 function groupHtml(list, depth, gid, open){
   const live = list.reduce((s, p) => s + p.conns, 0);
-  return `<div class="proc faint" data-group="${esc(gid)}" style="padding-left:${4 + depth * 14}px">
+  return `<div class="proc faint" data-group="${esc(gid)}" role="treeitem" tabindex="-1"
+    aria-level="${depth + 1}" aria-expanded="${open}" style="padding-left:${4 + depth * 14}px">
     <span class="twist${open ? ' open' : ''}" data-tw="${esc(gid)}">${ic('chev')}</span>
     <span class="led ${list.some(p => p.active) ? 'on' : ''}"></span>
     <span class="nm">${esc(list[0].name)}</span>
@@ -689,14 +726,53 @@ $('#plist').addEventListener('click', async e => {
   const pid = +el.dataset.pid;
   state.selected = state.selected === pid ? null : pid;
   // подсветка сразу, не дожидаясь ответа сервера
-  document.querySelectorAll('.proc.sel').forEach(x => x.classList.remove('sel'));
-  if (state.selected !== null) el.classList.add('sel');
+  document.querySelectorAll('.proc.sel').forEach(x => { x.classList.remove('sel'); x.setAttribute('aria-selected', 'false'); });
+  if (state.selected !== null){ el.classList.add('sel'); el.setAttribute('aria-selected', 'true'); }
+  procSeq++; stateGen++;
   $('#rows').innerHTML = '';
   rowIndex.clear();
 
+  selecting++;
   await api('/api/select', {method:'POST', headers:{'Content-Type':'application/json'},
     body: JSON.stringify({pid: state.selected})});
-  refresh();
+  if (--selecting) return;
+  loadProcs();
+  hardRefresh();
+});
+
+// Клавиатура по образцу WAI-ARIA tree: стрелки, Home/End, Enter и пробел.
+$('#plist').addEventListener('keydown', e => {
+  const el = e.target.closest('.proc');
+  if (!el || e.altKey || e.ctrlKey || e.metaKey) return;
+  const rows = [...$('#plist').querySelectorAll('.proc')];
+  const i = rows.indexOf(el);
+  const tw = el.querySelector('.twist[data-tw]');
+  const open = el.getAttribute('aria-expanded') === 'true';
+  const level = +el.getAttribute('aria-level');
+  let to = null;
+  switch (e.key){
+    case 'ArrowDown': to = rows[i + 1]; break;
+    case 'ArrowUp': to = rows[i - 1]; break;
+    case 'Home': to = rows[0]; break;
+    case 'End': to = rows[rows.length - 1]; break;
+    case 'ArrowRight':
+      if (tw && !open) tw.click(); else if (open) to = rows[i + 1];
+      break;
+    case 'ArrowLeft':
+      if (tw && open) tw.click();
+      else to = rows.slice(0, i).findLast(r => +r.getAttribute('aria-level') < level);
+      break;
+    case 'Enter': case ' ':
+      if (el.dataset.pid) el.click(); else tw?.click();
+      break;
+    default: return;
+  }
+  e.preventDefault();
+  if (to){
+    rows.forEach(r => r.tabIndex = -1);
+    to.tabIndex = 0;
+    to.focus();
+  }
 });
 
 /* ---------- таблица ---------- */
@@ -711,7 +787,9 @@ function listRow(c){
   const sni = c.sni ? '<span class="tag t-sni">SNI</span>' : '';
   const proc = c.pname
     ? `${esc(c.pname)} <span class="mono dim">${c.pid}</span>`
-    : `<span class="tag t-ghost" title="${t('Caught by packet parsing, not in the socket table')}">${t('packets only')}</span>`;
+    : c.from_packets_only
+      ? `<span class="tag t-ghost" title="${t('Caught by packet parsing, not in the socket table')}">${t('packets only')}</span>`
+      : `<span class="tag t-ghost" title="${t('The socket is in the table, but its process is unknown or the tuple was reused')}">${t('owner unknown')}</span>`;
   return [
     `<td class="mono dim">${fmtTime(c.first_seen)}</td>`,
     `<td><span class="st ${esc(c.state)}">${esc(c.state)}</span></td>`,
@@ -719,7 +797,7 @@ function listRow(c){
        ${copyBtn(c.domain || c.remote, 'Copy name')}</div></td>`,
     `<td><div class="cell"><span class="txt mono ip">${esc(c.remote)}</span>
        ${copyBtn(c.remote, 'Copy address')}</div></td>`,
-    `<td class="mono">${c.rport}<span class="proto">${c.proto}</span></td>`,
+    `<td><div class="port mono"><span>${c.rport}</span><span class="tag p-${c.proto}">${c.proto}</span></div></td>`,
     `<td class="dim" title="${esc((c.asn || '') + ' ' + (c.owner || ''))}">${esc(c.asn || '')} ${esc(c.owner || '')}</td>`,
     `<td>${proc}</td>`,
     `<td class="mono num">${fmtBytes(c.tx_bytes)}</td>`,
@@ -739,7 +817,7 @@ function aggRow(a){
        ${copyBtn(a.domain || a.remote, 'Copy name')}</div></td>`,
     `<td><div class="cell"><span class="txt mono ip">${esc(a.remote)}</span>
        ${copyBtn(a.remote, 'Copy address')}</div></td>`,
-    `<td class="mono">${a.rport}<span class="proto">${a.proto}</span></td>`,
+    `<td><div class="port mono"><span>${a.rport}</span><span class="tag p-${a.proto}">${a.proto}</span></div></td>`,
     `<td class="dim" title="${esc((a.asn || '') + ' ' + (a.owner || ''))}">${esc(a.asn || '')} ${esc(a.owner || '')}</td>`,
     `<td class="dim">${plural(a.sessions, ['session', 'sessions'], ['сессия', 'сессии', 'сессий'])}</td>`,
     `<td class="mono num">${fmtBytes(a.tx_bytes)}</td>`,
@@ -782,15 +860,22 @@ function renderRows(items, makeRow, sigOf){
   }
 }
 
+const stateUrl = () => `/api/state?scope=${state.scope}&view=${state.view}`
+  + `&q=${encodeURIComponent($('#qc').value)}&proto=${state.proto}`
+  + `&show_local=${state.showLocal ? 1 : 0}&show_self=${state.showSelf ? 1 : 0}`;
+
+// Ответ по старым фильтрам или до hardRefresh отбрасывается, и запрос
+// повторяется сразу, а не на следующем тике.
+let stateGen = 0;
 async function refresh(){
-  if (state.busy) return;
+  if (state.busy || selecting) return;
   state.busy = true;
+  const gen = stateGen, url = stateUrl();
+  let stale = false;
   try {
-    const url = `/api/state?scope=${state.scope}&view=${state.view}`
-      + `&q=${encodeURIComponent($('#qc').value)}`
-      + `&show_local=${state.showLocal ? 1 : 0}&show_self=${state.showSelf ? 1 : 0}`;
     const r = await api(url);
-    if (!r) return;
+    stale = gen !== stateGen || url !== stateUrl() || selecting > 0;
+    if (!r || stale) return;
 
     state.dump = r.dump;
     state.selected = r.selected;
@@ -813,7 +898,8 @@ async function refresh(){
     $('#s-pkts').textContent = fmtNum(r.stats.packets);
     $('#s-if').textContent = r.stats.iface;
     $('#capled').className = 'dot' + (r.stats.capture ? '' : ' off');
-    $('#capled').title = t(r.stats.capture ? 'Packet capture is active' : 'Packet capture unavailable');
+    $('#capled').title = t(r.stats.capture ? 'Packet capture is active' : 'Packet capture unavailable') + (r.stats.dropped ? '. ' + t('Packet tracking dropped: {n}', {n:r.stats.dropped}) : '');
+    $('#capled').classList.toggle('off', !r.stats.capture || !!r.stats.dropped);
 
     const w = $('#warn');
     if (r.stats.capture || !r.stats.capture_hint){ w.style.display = 'none'; delete w.dataset.offline; }
@@ -847,15 +933,16 @@ async function refresh(){
     $('#empty').style.display = items.length ? 'none' : '';
 
     if (state.view === 'agg'){
-      renderRows(items, aggRow, a => `${a.live}|${a.sessions}|${a.tx_bytes}|${a.rx_bytes}|${a.domain}|${a.asn}`);
+      renderRows(items, aggRow, a => `${a.live}|${a.sessions}|${a.tx_bytes}|${a.rx_bytes}|${a.domain}|${a.asn}|${a.owner}|${a.sni}|${a.first_seen}`);
     } else {
-      renderRows(items, listRow, c => `${c.state}|${c.tx_bytes}|${c.rx_bytes}|${c.domain}|${c.asn}|${c.pname}`);
+      renderRows(items, listRow, c => `${c.state}|${c.tx_bytes}|${c.rx_bytes}|${c.domain}|${c.asn}|${c.pname}|${c.from_packets_only}|${c.owner}|${c.pid}|${c.sni}|${c.first_seen}`);
     }
 
     renderDumpBtn(r.dump);
     $('#btn-dump').title = r.stats.capture ? '' : t('Packet capture unavailable, recording may not start');
   } finally {
     state.busy = false;
+    if (stale) refresh();
   }
 }
 
@@ -902,6 +989,10 @@ document.querySelectorAll('#viewmode button').forEach(b => b.onclick = () => {
   document.querySelectorAll('#viewmode button').forEach(x => x.classList.remove('on'));
   b.classList.add('on'); state.view = b.dataset.v; hardRefresh();
 });
+document.querySelectorAll('#proto button').forEach(b => b.onclick = () => {
+  document.querySelectorAll('#proto button').forEach(x => x.classList.remove('on'));
+  b.classList.add('on'); state.proto = b.dataset.p; hardRefresh();
+});
 $('#showlocal').onchange = e => { state.showLocal = e.target.checked; hardRefresh(); };
 $('#showselfc').onchange = e => {
   state.showSelf = e.target.checked; $('#showself').checked = e.target.checked;
@@ -913,7 +1004,7 @@ $('#showself').onchange = e => {
 };
 
 function hardRefresh(){
-  $('#rows').innerHTML = ''; rowIndex.clear(); refresh();
+  stateGen++; $('#rows').innerHTML = ''; rowIndex.clear(); refresh();
 }
 
 function showDumpError(r){
@@ -1001,8 +1092,10 @@ async function renderDumps(){
   $('#btn-hide').onclick = hideDumps;
 }
 
-$('#btn-export').onclick = () => location.href = '/api/export?scope=' + state.scope;
-$('#btn-html').onclick = () => location.href = '/api/export?format=html&scope=' + state.scope;
+const exportUrl = format => `/api/export?format=${format}&scope=${state.scope}`
+  + `&q=${encodeURIComponent($('#qc').value)}&proto=${state.proto}`;
+$('#btn-export').onclick = () => location.href = exportUrl('json');
+$('#btn-html').onclick = () => location.href = exportUrl('html');
 $('#btn-clear').onclick = async () => { await api('/api/clear', {method:'POST'}); hardRefresh(); };
 
 document.querySelectorAll('#lang button').forEach(b => b.onclick = async () => {

@@ -32,8 +32,8 @@ and traffic, ready to be turned into rules.
 ## Features
 
 - **Domains, not only IPs.** Names come from SNI of TLS and QUIC (HTTP/3) handshakes
-  and DNS responses seen on the wire, with PTR as a fallback, and are cached between
-  runs.
+  and DNS responses seen on the wire, with PTR as a fallback. DNS cache entries
+  survive restarts until their TTL expires; shared IPs keep ambiguous names unresolved.
 - **Knows the process tree.** Selecting a process brings in all its descendants.
   Steam, pressure-vessel, wineserver and `game.exe` form one group, and sockets that
   Wine duplicates in wineserver are attributed to the `.exe`.
@@ -143,12 +143,14 @@ PktMon/ETW engine. Details are in [docs/windows.md](docs/windows.md).
 
 ## Privacy
 
-- The interface is served on `127.0.0.1` only. Requests with a foreign `Host` and
-  POST requests from other sites are rejected.
+- The interface is served on `127.0.0.1` only. Requests with a foreign `Host`,
+  POST requests from other sites and any request the browser marks as sent by
+  another site (`Sec-Fetch-Site`) are rejected.
 - No telemetry, no accounts, no update checks.
 - The only outgoing requests are DNS lookups for address names: PTR through the
   system resolver and ASN through
   [Team Cymru](https://www.team-cymru.com/ip-asn-mapping) (`origin.asn.cymru.com`).
+  Only public addresses are looked up.
 - History, name cache and dumps stay on your disk.
 
 ## Contributing

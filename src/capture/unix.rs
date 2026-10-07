@@ -5,12 +5,12 @@
 
 use std::process::Stdio;
 
+use crate::capture::PacketSender;
 use tokio::io::AsyncReadExt;
 use tokio::process::{Child, Command};
-use tokio::sync::mpsc::UnboundedSender;
 
 use crate::i18n::Text;
-use crate::pcap::{Packet, PcapngReader};
+use crate::pcap::PcapngReader;
 
 pub fn dumpcap() -> &'static std::path::Path {
     std::path::Path::new("dumpcap")
@@ -142,7 +142,15 @@ impl Process {
     }
 
     async fn stop(&mut self) -> std::io::Result<()> {
-        self.check()?;
+        // SIGINT из терминала и SIGTERM от systemd доходят до dumpcap напрямую:
+        // он уже закрыл файл и вышел с кодом 0, это штатная остановка.
+        if let Some(status) = self.child.try_wait()? {
+            return if status.success() {
+                Ok(())
+            } else {
+                Err(self.failure())
+            };
+        }
         if let Some(pid) = self.child.id() {
             soft_stop(pid);
         }
@@ -192,19 +200,19 @@ impl Live {
     }
 }
 
-pub async fn start_live(iface: &str, tx: UnboundedSender<Packet>) -> Result<Live, Text> {
+pub async fn start_live(iface: &str, tx: PacketSender) -> Result<Live, Text> {
     probe()?;
     spawn_live(iface, tx)
         .await
         .map_err(|e| text!("dumpcap did not start: {e}", "dumpcap не запустился: {e}"))
 }
 
-async fn spawn_live(iface: &str, tx: UnboundedSender<Packet>) -> std::io::Result<Live> {
+async fn spawn_live(iface: &str, tx: PacketSender) -> std::io::Result<Live> {
     use std::sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
     };
-    let mut cmd = command(iface, "2048", NO_LOOPBACK);
+    let mut cmd = command(iface, "0", NO_LOOPBACK);
     cmd.args(["-w", "-"]).stdout(Stdio::piped());
     let mut process = Process::spawn(cmd)?;
     let mut stdout = process.child.stdout.take().expect("stdout piped");
@@ -281,12 +289,11 @@ impl Dump {
             ));
         }
         self.error = None;
-        self.path = Some(path.to_string());
         let started = crate::state::now_ms();
         let mut cmd = command(iface, "0", NO_LOOPBACK);
         cmd.args(["-w", path]).stdout(Stdio::null());
         let mut process = Process::spawn(cmd)?;
-        process
+        let ready = process
             .ready(|| {
                 let mut header = [0u8; 4];
                 std::fs::File::open(path).ok().is_some_and(|mut file| {
@@ -294,7 +301,13 @@ impl Dump {
                         && header == [0x0a, 0x0d, 0x0d, 0x0a]
                 })
             })
-            .await?;
+            .await;
+        if let Err(e) = ready {
+            let _ = process.child.kill().await;
+            let _ = std::fs::remove_file(path);
+            return Err(e);
+        }
+        self.path = Some(path.to_string());
         self.process = Some(process);
         self.started_ms = Some(started);
         Ok(())
@@ -312,12 +325,13 @@ impl Dump {
 
 #[cfg(unix)]
 fn soft_stop(pid: u32) {
-    // Минимальный внешний вызов вместо зависимости на весь крейт libc.
+    // libc подключен только под Linux, а модуль собирается на любой не-Windows системе.
+    const SIGTERM: i32 = 15;
     unsafe extern "C" {
         fn kill(pid: i32, sig: i32) -> i32;
     }
     unsafe {
-        kill(pid as i32, 15);
+        kill(pid as i32, SIGTERM);
     }
 }
 
@@ -365,6 +379,18 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn dumpcap_that_already_exited_cleanly_stops_successfully() {
+        let mut process = Process::spawn(script("exit 0")).unwrap();
+        process.child.wait().await.unwrap();
+        let mut dump = Dump {
+            process: Some(process),
+            path: Some("demo.pcapng".into()),
+            ..Dump::default()
+        };
+        assert_eq!(dump.stop().await.unwrap().as_deref(), Some("demo.pcapng"));
+    }
+
+    #[tokio::test]
     async fn repeated_dump_start_keeps_its_original_path_and_child() {
         let process = Process::spawn(script("exec sleep 30")).unwrap();
         let pid = process.child.id();
@@ -388,5 +414,76 @@ mod tests {
         };
         assert!(live.check().is_err());
         live.process.child.kill().await.unwrap();
+    }
+    #[tokio::test]
+    #[ignore = "requires dumpcap capture rights and the Linux loopback interface"]
+    async fn real_loopback_capture_reassembles_tls_segments() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let mut cmd = command("lo", "0", &format!("tcp port {}", address.port()));
+        cmd.args(["-w", "-", "-a", "duration:2"])
+            .stdout(Stdio::piped());
+        let mut process = Process::spawn(cmd).unwrap();
+        let mut output = process.child.stdout.take().unwrap();
+        let mut first = [0u8; 4];
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            output.read_exact(&mut first),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(first, [0x0a, 0x0d, 0x0d, 0x0a]);
+        let receiving = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut data = Vec::new();
+            socket.read_to_end(&mut data).await.unwrap();
+            data
+        });
+        let hex: Vec<u8> = include_str!("../testdata/rfc9001-client-hello-crypto.hex")
+            .bytes()
+            .filter(u8::is_ascii_hexdigit)
+            .collect();
+        let h: Vec<u8> = hex
+            .chunks(2)
+            .map(|c| u8::from_str_radix(std::str::from_utf8(c).unwrap(), 16).unwrap())
+            .collect();
+        let mut record = vec![22, 3, 3];
+        record.extend(((h.len() - 4) as u16).to_be_bytes());
+        record.extend(&h[4..]);
+        let mut client = tokio::net::TcpStream::connect(address).await.unwrap();
+        client.set_nodelay(true).unwrap();
+        for part in record.chunks(80) {
+            client.write_all(part).await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+        }
+        drop(client);
+        assert_eq!(receiving.await.unwrap(), record);
+        let mut stream = first.to_vec();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(4),
+            output.read_to_end(&mut stream),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(process.child.wait().await.unwrap().success());
+        let mut packets = Vec::new();
+        PcapngReader::new().push(&stream, &mut packets);
+        assert_eq!(
+            packets
+                .iter()
+                .filter_map(|p| p.sni.as_deref())
+                .collect::<Vec<_>>(),
+            ["example.com"]
+        );
+        assert!(
+            packets
+                .iter()
+                .filter(|p| p.sport == address.port() || p.dport == address.port())
+                .count()
+                > 3
+        );
     }
 }

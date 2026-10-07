@@ -79,7 +79,7 @@ fn cached_names() -> Vec<(String, u16)> {
     out
 }
 
-fn cached_addrs(name: &str, ty: u16, out: &mut Vec<(String, IpAddr)>) {
+fn cached_addrs(name: &str, ty: u16, out: &mut Vec<(String, IpAddr, u32)>) {
     let wide: Vec<u16> = name.encode_utf16().chain(Some(0)).collect();
     let mut res: *mut DNS_RECORDW = std::ptr::null_mut();
     let rc = unsafe {
@@ -111,7 +111,7 @@ fn cached_addrs(name: &str, ty: u16, out: &mut Vec<(String, IpAddr)>) {
         if let Some(ip) = ip
             && !ip.is_unspecified()
         {
-            out.push((name.to_string(), ip));
+            out.push((name.to_string(), ip, rec.dwTtl));
         }
         r = rec.pNext;
     }
@@ -121,7 +121,7 @@ fn cached_addrs(name: &str, ty: u16, out: &mut Vec<(String, IpAddr)>) {
 }
 
 /// Пары (имя, адрес) из кеша. Блокирующий вызов, сотни записей - десятки миллисекунд.
-pub fn snapshot() -> Vec<(String, IpAddr)> {
+pub fn snapshot() -> Vec<(String, IpAddr, u32)> {
     let mut out = Vec::new();
     for (name, ty) in cached_names() {
         cached_addrs(&name, ty, &mut out);
@@ -138,6 +138,6 @@ mod tests {
     fn snapshot_does_not_crash() {
         let _ = std::net::ToSocketAddrs::to_socket_addrs(&("localhost", 80));
         let s = snapshot();
-        assert!(s.iter().all(|(n, _)| !n.is_empty()));
+        assert!(s.iter().all(|(n, _, _)| !n.is_empty()));
     }
 }

@@ -10,7 +10,7 @@ OUT=target/debian
 ROOT=$OUT/sockettrail_${VERSION}_$ARCH
 rm -rf "$ROOT"
 
-cargo build --release
+cargo build --locked --release
 
 install -Dm755 target/release/sockettrail "$ROOT/usr/bin/sockettrail"
 strip "$ROOT/usr/bin/sockettrail"
@@ -26,10 +26,13 @@ install -Dm644 LICENSE "$ROOT/usr/share/doc/sockettrail/copyright"
 gzip -9nc CHANGELOG.md > "$ROOT/usr/share/doc/sockettrail/changelog.gz"
 
 # dpkg-shlibdeps computes the system library dependencies and needs debian/control.
+# Its warning about the binary outside debian/<package> is expected here; other
+# messages stay visible.
 TMP=$(mktemp -d -p "$OUT")
+trap 'rm -rf "$TMP"' EXIT
 mkdir -p "$TMP/debian" && touch "$TMP/debian/control"
-DEPS=$(cd "$TMP" && dpkg-shlibdeps -O -e "$OLDPWD/$ROOT/usr/bin/sockettrail" 2>/dev/null | sed -n 's/^shlibs:Depends=//p')
-rm -rf "$TMP"
+DEPS=$(cd "$TMP" && LC_ALL=C dpkg-shlibdeps -O -e "$OLDPWD/$ROOT/usr/bin/sockettrail" \
+  2> >(grep -v "should already be installed in their package" >&2) | sed -n 's/^shlibs:Depends=//p')
 
 SIZE=$(du -sk --exclude=DEBIAN "$ROOT" | cut -f1)
 MAINT="mazixs <mazixs@users.noreply.github.com>"

@@ -39,6 +39,8 @@ The left panel is a process tree that refreshes by itself.
 - Selecting a process brings in all its descendants, so a game under Proton is seen
   together with its launcher chain. A dozen leaves with the same name, like browser
   tabs, collapse into one row such as `chrome x12`.
+- The tree works from the keyboard: the arrows move between rows, Right and Left
+  expand and collapse a branch, Enter or Space selects a process.
 
 ## The connection table
 
@@ -50,7 +52,9 @@ computer. **List** is the history row by row, **By address** is the summary belo
   250 ms polling interval.
 - The **SNI** badge means the name came from the TLS or QUIC handshake of this very
   connection, which is the most reliable source.
-- The filter box matches domain, IP, port and ASN.
+- The port cell carries a **TCP** or **UDP** badge. The **All / TCP / UDP** switch
+  limits the table to one protocol.
+- The filter box matches domain, IP, port, ASN and protocol: `udp` keeps UDP only.
 - **local addresses** shows traffic to 127.0.0.53, mDNS, SSDP and other local
   targets; **SocketTrail connections** shows the program's own service traffic.
   Both are hidden by default.
@@ -125,7 +129,9 @@ traffic from the whole host.
 
 - **Report** saves a self-contained HTML file that opens without internet access.
 - **JSON** saves the same data in a machine-readable form.
-- Both take the current scope: the selected process or the whole host.
+- Both take the current scope (the selected process or the whole host), the filter
+  box and the protocol switch. Local addresses are always included, SocketTrail's own
+  connections never are.
 - **Copy** puts the whole visible table into the clipboard as TSV, ready for a
   spreadsheet.
 
@@ -143,8 +149,9 @@ The name of an address comes from four sources, in order of reliability:
 4. A label for special addresses: `127.0.0.53` is the system resolver itself and
    never has a domain.
 
-A name from DNS replaces a PTR name if it arrives later. Names are stored in the cache
-and survive a restart.
+A name from DNS replaces a PTR name if it arrives later. An existing connection
+keeps its first DNS name until SNI replaces it. DNS cache entries survive a restart
+until their TTL expires; simultaneous names for one IP remain ambiguous.
 
 The network owner is the ASN and the name of the organization that announces the
 address. It often differs from the PTR name: an address can have a PTR of one company
@@ -166,15 +173,14 @@ To have the history build up before the window is opened, for example from login
 the game starts, run SocketTrail as a systemd user service:
 
 ```sh
-mkdir -p ~/.config/systemd/user
-cp assets/sockettrail.service ~/.config/systemd/user/
 systemctl --user enable --now sockettrail
 ```
 
-The `.deb` package installs this unit already, disabled: only the last command is
-needed. In this mode `dumpcap` runs all the time and parses all traffic of the
-computer. Open the window with `sockettrail` or the menu shortcut as usual: it
-connects to the running service, and closing it does not stop the collection.
+`install.sh` and the `.deb` package install this unit disabled, with the path to
+the installed binary, and `uninstall.sh` removes it. In this mode `dumpcap` runs all
+the time and parses all traffic of the computer. Open the window with `sockettrail`
+or the menu shortcut as usual: it connects to the running service, and closing it
+does not stop the collection.
 
 ## Language
 

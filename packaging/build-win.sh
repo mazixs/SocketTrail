@@ -11,7 +11,7 @@ OUT=target/windows
 DIR=$OUT/SocketTrail
 ZIP=$OUT/SocketTrail-$VERSION-windows-x64.zip
 
-cargo build --release --target "$TARGET"
+cargo build --locked --release --target "$TARGET"
 
 # Reject console-subsystem builds: the portable application must not open CMD.
 "$PYTHON" - "target/$TARGET/release/sockettrail.exe" <<'PY_CHECK'

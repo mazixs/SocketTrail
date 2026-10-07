@@ -14,7 +14,7 @@ jobs:
   check-version:
     runs-on: ubuntu-26.04
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Tag matches the version in Cargo.toml
         run: |
           v=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
@@ -26,11 +26,14 @@ jobs:
     needs: check-version
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+        with:
+          toolchain: stable
       - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends dpkg-dev
+      - run: cargo test --locked
       - run: make deb
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: deb
           path: target/debian/*.deb
@@ -40,8 +43,11 @@ jobs:
     needs: check-version
     runs-on: windows-2025
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+        with:
+          toolchain: stable
+      - run: cargo test --locked
       - name: Build zip (msvc, static CRT)
         shell: bash
         env:
@@ -50,7 +56,7 @@ jobs:
         run: packaging/build-win.sh
       - run: packaging/smoke.sh target/windows/SocketTrail/sockettrail.exe
         shell: bash
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: win
           path: target/windows/*.zip
@@ -64,14 +70,14 @@ jobs:
       id-token: write
       attestations: write
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/download-artifact@v8
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           path: dist
           merge-multiple: true
       - run: cd dist && sha256sum -- * > SHA256SUMS && cat SHA256SUMS
       # GitHub does not keep attestations for private repositories of a user account.
-      - uses: actions/attest@v4
+      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
         if: ${{ !github.event.repository.private }}
         with:
           subject-path: |
@@ -82,7 +88,7 @@ jobs:
           v=${GITHUB_REF_NAME#v}
           awk -v h="## v$v" 'index($0,h)==1{f=1;next} /^## /{if(f)exit} f' CHANGELOG.md > notes.md
           [ -s notes.md ] || echo "SocketTrail $GITHUB_REF_NAME" > notes.md
-      - uses: softprops/action-gh-release@v3
+      - uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3
         with:
           name: SocketTrail ${{ github.ref_name }}
           body_path: notes.md

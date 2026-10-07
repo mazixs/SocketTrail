@@ -7,6 +7,8 @@ fn esc(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
 }
 
 fn bytes(n: u64) -> String {
@@ -16,12 +18,16 @@ fn bytes(n: u64) -> String {
         format!("{n} {}", tr("B", "Б"))
     } else if n < 1_048_576 {
         format!("{:.1} {}", n as f64 / 1024.0, tr("KB", "КБ"))
-    } else {
+    } else if n < 1_073_741_824 {
         format!("{:.2} {}", n as f64 / 1_048_576.0, tr("MB", "МБ"))
+    } else {
+        format!("{:.2} {}", n as f64 / 1_073_741_824.0, tr("GB", "ГБ"))
     }
 }
 
 pub fn render(title: &str, generated: &str, conns: &[Conn]) -> String {
+    let title = esc(title);
+    let generated = esc(generated);
     let uniq_ips: std::collections::BTreeSet<&str> =
         conns.iter().map(|c| c.remote.as_str()).collect();
     let uniq_dom: std::collections::BTreeSet<&str> =
@@ -51,10 +57,12 @@ pub fn render(title: &str, generated: &str, conns: &[Conn]) -> String {
                     c.owner.as_deref().unwrap_or("")
                 )),
                 proc = c.pname.as_deref().map(esc).unwrap_or_else(|| {
-                    format!(
-                        "<span class=dim>{}</span>",
+                    let why = if c.from_packets_only {
                         tr("packets only", "только пакеты")
-                    )
+                    } else {
+                        tr("owner unknown", "владелец неизвестен")
+                    };
+                    format!("<span class=dim>{why}</span>")
                 }),
                 tx = bytes(c.tx_bytes),
                 rx = bytes(c.rx_bytes),
@@ -98,7 +106,7 @@ pre{{background:var(--panel2);border:1px solid var(--line);border-radius:8px;pad
 <div class=card><div class=n>{rx}</div><div class=l>{l_rx}</div></div>
 </div>
 <h2>{h_conns}</h2>
-<table><thead><tr><th>Proto<th>{c_state}<th>{c_dom}<th>{c_addr}<th>{c_port}<th>{c_net}<th>{c_proc}<th>{c_out}<th>{c_in}</tr></thead>
+<table><thead><tr><th>{c_proto}<th>{c_state}<th>{c_dom}<th>{c_addr}<th>{c_port}<th>{c_net}<th>{c_proc}<th>{c_out}<th>{c_in}</tr></thead>
 <tbody>{rows}</tbody></table>
 <h2>{h_doms}</h2><pre>{domains}</pre>
 </div></body></html>"#,
@@ -110,6 +118,7 @@ pre{{background:var(--panel2);border:1px solid var(--line);border-radius:8px;pad
         l_tx = tr("outgoing traffic", "исходящий трафик"),
         l_rx = tr("incoming traffic", "входящий трафик"),
         h_conns = tr("Connections", "Соединения"),
+        c_proto = tr("Proto", "Протокол"),
         c_state = tr("State", "Состояние"),
         c_dom = tr("Domain", "Домен"),
         c_addr = tr("Address", "Адрес"),
@@ -125,4 +134,18 @@ pre{{background:var(--panel2);border:1px solid var(--line);border-radius:8px;pad
         tx = bytes(tx),
         rx = bytes(rx),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn title_and_time_are_escaped() {
+        let html = render("Firefox <!--x \"a\" 'b'", "<img src=//a.bc>", &[]);
+        assert!(!html.contains("<!--x"));
+        assert!(!html.contains("<img"));
+        assert!(html.contains("<h1>Firefox &lt;!--x &quot;a&quot; &#39;b&#39;</h1>"));
+        assert!(html.contains("&lt;img src=//a.bc&gt;"));
+    }
 }

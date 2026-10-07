@@ -11,9 +11,9 @@ use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Mutex, OnceLock, mpsc};
 
-use tokio::sync::mpsc::UnboundedSender;
+use crate::capture::PacketSender;
 use windows_sys::Win32::System::Diagnostics::Etw::{
     CONTROLTRACE_HANDLE, CloseTrace, ControlTraceW, EVENT_CONTROL_CODE_ENABLE_PROVIDER,
     EVENT_RECORD, EVENT_TRACE_CONTROL_STOP, EVENT_TRACE_LOGFILEW, EVENT_TRACE_PROPERTIES,
@@ -23,10 +23,11 @@ use windows_sys::Win32::System::Diagnostics::Etw::{
 };
 
 use crate::i18n::Text;
-use crate::pcap::{self, Packet};
-use crate::quic;
+use crate::pcap;
 
-const SESSION: &str = "SocketTrail";
+fn session_name() -> String {
+    format!("SocketTrail-{}", std::process::id())
+}
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const EVENT_PACKET: u16 = 160;
 /// Поля события 160 до Payload: PktGroupId u64, 7 x u16, 2 x u32, 2 x u16.
@@ -91,13 +92,13 @@ pub fn need_admin() -> Text {
 }
 
 struct Dedup {
-    order: VecDeque<u64>,
-    set: HashSet<u64>,
+    order: VecDeque<(u64, u16)>,
+    set: HashSet<(u64, u16)>,
 }
 
 impl Dedup {
     /// Один пакет проходит несколько компонентов стека с одним PktGroupId.
-    fn first(&mut self, id: u64) -> bool {
+    fn first(&mut self, id: (u64, u16)) -> bool {
         if !self.set.insert(id) {
             return false;
         }
@@ -116,12 +117,89 @@ struct DumpWriter {
     error: Option<String>,
 }
 
+enum Work {
+    Frame(Vec<u8>, i64),
+    Start(String, mpsc::Sender<std::io::Result<()>>),
+    Stop(mpsc::Sender<std::io::Result<()>>),
+    Shutdown,
+}
 struct Sink {
-    tx: UnboundedSender<Packet>,
-    seen: Mutex<Dedup>,
-    dump: Mutex<Option<DumpWriter>>,
-    quic: Mutex<quic::Assembler>,
+    queue: mpsc::SyncSender<Work>,
+    metrics: std::sync::Arc<crate::capture::Metrics>,
+    error: Mutex<Option<String>>,
     bad: AtomicU64,
+}
+
+// Только ограниченная копия события в callback. Разбор и диск - в рабочем потоке.
+fn consume(events: mpsc::Receiver<Work>, tx: PacketSender, sink: &Sink) {
+    let mut seen = Dedup {
+        order: VecDeque::new(),
+        set: HashSet::new(),
+    };
+    let mut parsers = pcap::Parsers::default();
+    let mut dump: Option<DumpWriter> = None;
+    while let Ok(event) = events.recv() {
+        match event {
+            Work::Frame(data, stamp) => match packet(&data) {
+                Some((group, number, linktype, orig, frame)) => {
+                    if linktype == 0 {
+                        sink.metrics.dropped.fetch_add(1, Ordering::Relaxed);
+                        continue;
+                    }
+                    if !seen.first((group, number)) {
+                        continue;
+                    }
+                    if let Some(w) = dump.as_mut() {
+                        let iface = if linktype == 1 { 0 } else { 1 };
+                        if w.error.is_none()
+                            && let Err(e) = write_epb(&mut w.out, iface, stamp, frame, orig)
+                        {
+                            w.error = Some(e.to_string());
+                            *sink.error.lock().unwrap() = w.error.clone();
+                        }
+                    }
+                    if let Some(packet) = pcap::parse_link_live(linktype, frame, &mut parsers) {
+                        let _ = tx.send(packet);
+                    }
+                }
+                None => {
+                    sink.bad.fetch_add(1, Ordering::Relaxed);
+                    sink.metrics.dropped.fetch_add(1, Ordering::Relaxed);
+                }
+            },
+            Work::Start(path, reply) => {
+                let result = if dump.is_some() {
+                    Err(std::io::Error::new(
+                        std::io::ErrorKind::AlreadyExists,
+                        t!("Recording is already running", "Запись уже идет"),
+                    ))
+                } else {
+                    (|| {
+                        let mut out =
+                            BufWriter::with_capacity(1 << 20, std::fs::File::create(path)?);
+                        write_header(&mut out)?;
+                        out.flush()?;
+                        dump = Some(DumpWriter { out, error: None });
+                        *sink.error.lock().unwrap() = None;
+                        Ok(())
+                    })()
+                };
+                let _ = reply.send(result);
+            }
+            Work::Stop(reply) => {
+                let result = if let Some(mut writer) = dump.take() {
+                    let flush = writer.out.flush();
+                    writer
+                        .error
+                        .map_or(flush, |e| Err(std::io::Error::other(e)))
+                } else {
+                    Ok(())
+                };
+                let _ = reply.send(result);
+            }
+            Work::Shutdown => break,
+        }
+    }
 }
 
 static SINK: OnceLock<Sink> = OnceLock::new();
@@ -131,6 +209,7 @@ static ACTIVE: AtomicBool = AtomicBool::new(false);
 pub struct Session {
     control: CONTROLTRACE_HANDLE,
     thread: Option<std::thread::JoinHandle<()>>,
+    worker: Option<std::thread::JoinHandle<()>>,
 }
 
 #[repr(C)]
@@ -154,7 +233,7 @@ fn props() -> Box<Props> {
 }
 
 fn stop_session() {
-    let name = wide(SESSION);
+    let name = wide(&session_name());
     let mut p = props();
     unsafe {
         ControlTraceW(
@@ -166,17 +245,14 @@ fn stop_session() {
     };
 }
 
-pub fn start(tx: UnboundedSender<Packet>) -> Result<Session, Text> {
+pub fn start(tx: PacketSender) -> Result<Session, Text> {
     probe()?;
+    let (queue, events) = mpsc::sync_channel(256);
     if SINK
         .set(Sink {
-            tx,
-            seen: Mutex::new(Dedup {
-                order: VecDeque::new(),
-                set: HashSet::new(),
-            }),
-            dump: Mutex::new(None),
-            quic: Mutex::new(quic::Assembler::new()),
+            queue,
+            metrics: tx.metrics.clone(),
+            error: Mutex::new(None),
             bad: AtomicU64::new(0),
         })
         .is_err()
@@ -184,9 +260,8 @@ pub fn start(tx: UnboundedSender<Packet>) -> Result<Session, Text> {
         return Err(t!("capture is already running", "захват уже запущен").into());
     }
 
-    // Хвосты прошлого запуска, если он завершился аварийно.
-    stop_session();
-    let _ = pktmon(&["stop"]);
+    // PktMon общесистемный: start откажет, если захват уже занят.
+    // Нельзя останавливать чужую сессию ради своего запуска.
 
     let etl = etl_path();
     let _ = std::fs::create_dir_all(etl.parent().unwrap_or(&etl));
@@ -208,7 +283,7 @@ pub fn start(tx: UnboundedSender<Packet>) -> Result<Session, Text> {
         "memory",
     ])?;
 
-    let name = wide(SESSION);
+    let name = wide(&session_name());
     let mut p = props();
     let mut control = CONTROLTRACE_HANDLE { Value: 0 };
     let rc = unsafe { StartTraceW(&mut control, name.as_ptr(), &mut p.p) };
@@ -242,9 +317,10 @@ pub fn start(tx: UnboundedSender<Packet>) -> Result<Session, Text> {
         .into());
     }
 
+    let worker = std::thread::spawn(move || consume(events, tx, SINK.get().unwrap()));
     let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
     let thread = std::thread::spawn(move || {
-        let mut name = wide(SESSION);
+        let mut name = wide(&session_name());
         let mut log: EVENT_TRACE_LOGFILEW = unsafe { std::mem::zeroed() };
         log.LoggerName = name.as_mut_ptr();
         log.Anonymous1.ProcessTraceMode =
@@ -272,6 +348,7 @@ pub fn start(tx: UnboundedSender<Packet>) -> Result<Session, Text> {
     let session = Session {
         control,
         thread: Some(thread),
+        worker: Some(worker),
     };
     match ready_rx.recv_timeout(std::time::Duration::from_secs(5)) {
         Ok(Ok(())) => Ok(session),
@@ -308,6 +385,12 @@ impl Drop for Session {
         if let Some(t) = self.thread.take() {
             let _ = t.join();
         }
+        if let Some(sink) = SINK.get() {
+            let _ = sink.queue.send(Work::Shutdown);
+        }
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
         let _ = pktmon(&["stop"]);
         let _ = std::fs::remove_file(etl_path());
         if let Some(s) = SINK.get() {
@@ -335,43 +418,22 @@ unsafe extern "system" fn on_event(ev: *mut EVENT_RECORD) {
     }
     let data =
         unsafe { std::slice::from_raw_parts(ev.UserData as *const u8, ev.UserDataLength as usize) };
-    match packet(data) {
-        Some((group, linktype, orig, frame)) => {
-            if linktype == 0 || !sink.seen.lock().map(|mut d| d.first(group)).unwrap_or(true) {
-                return;
-            }
-            let parsed = {
-                let mut q = sink.quic.lock().ok();
-                pcap::parse_link_with(linktype, frame, q.as_deref_mut())
-            };
-            if let Ok(mut d) = sink.dump.lock()
-                && let Some(w) = d.as_mut()
-            {
-                let iface = if linktype == 1 { 0 } else { 1 };
-                if w.error.is_none()
-                    && let Err(e) = write_epb(&mut w.out, iface, h.TimeStamp, frame, orig)
-                {
-                    w.error = Some(e.to_string());
-                }
-            }
-            if let Some(p) = parsed {
-                let _ = sink.tx.send(p);
-            }
-        }
-        None => {
-            sink.bad.fetch_add(1, Ordering::Relaxed);
-        }
+    if let Err(mpsc::TrySendError::Full(_)) =
+        sink.queue.try_send(Work::Frame(data.to_vec(), h.TimeStamp))
+    {
+        sink.metrics.dropped.fetch_add(1, Ordering::Relaxed);
     }
 }
 
-/// (PktGroupId, linktype pcap, исходная длина, кадр). Раскладку сверяем по длине:
+/// (PktGroupId, PktNumber, linktype pcap, исходная длина, кадр). Раскладку сверяем по длине:
 /// если в новой версии Windows поля поменяются, событие просто не разберется.
-fn packet(d: &[u8]) -> Option<(u64, u16, u32, &[u8])> {
+fn packet(d: &[u8]) -> Option<(u64, u16, u16, u32, &[u8])> {
     let u16at = |o: usize| u16::from_le_bytes([d[o], d[o + 1]]);
     if d.len() < HEADER {
         return None;
     }
     let group = u64::from_le_bytes(d[0..8].try_into().ok()?);
+    let number = u16at(8);
     let ptype = u16at(14);
     let orig = u16at(30) as u32;
     let logged = u16at(32) as usize;
@@ -381,9 +443,15 @@ fn packet(d: &[u8]) -> Option<(u64, u16, u32, &[u8])> {
     let linktype = match ptype {
         1 => 1,   // Ethernet
         3 => 101, // IP без канального заголовка
-        _ => return Some((group, 0, orig, &d[HEADER..])),
+        _ => return Some((group, number, 0, orig, &d[HEADER..])),
     };
-    Some((group, linktype, orig.max(logged as u32), &d[HEADER..]))
+    Some((
+        group,
+        number,
+        linktype,
+        orig.max(logged as u32),
+        &d[HEADER..],
+    ))
 }
 
 fn block(out: &mut impl Write, ty: u32, body: &[u8]) -> std::io::Result<()> {
@@ -443,18 +511,15 @@ pub fn dump_start(path: &str) -> std::io::Result<()> {
     let sink = SINK
         .get()
         .ok_or_else(|| std::io::Error::other(t!("capture is not running", "захват не запущен")))?;
-    let mut dump = sink.dump.lock().unwrap();
-    if dump.is_some() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::AlreadyExists,
-            t!("Recording is already running", "Запись уже идет"),
-        ));
-    }
-    let mut out = BufWriter::with_capacity(1 << 20, std::fs::File::create(path)?);
-    write_header(&mut out)?;
-    out.flush()?;
-    *dump = Some(DumpWriter { out, error: None });
-    Ok(())
+    let (reply, result) = mpsc::channel();
+    sink.queue
+        .send(Work::Start(path.to_string(), reply))
+        .map_err(|_| {
+            std::io::Error::other(t!("ETW worker stopped", "Рабочий поток ETW остановился"))
+        })?;
+    result.recv().map_err(|_| {
+        std::io::Error::other(t!("ETW worker stopped", "Рабочий поток ETW остановился"))
+    })?
 }
 
 pub fn is_active() -> bool {
@@ -465,25 +530,20 @@ pub fn dump_error() -> Option<String> {
     if !is_active() {
         return Some(t!("Packet capture stopped", "Пакетный захват остановился"));
     }
-    SINK.get().and_then(|s| {
-        s.dump
-            .lock()
-            .unwrap()
-            .as_ref()
-            .and_then(|w| w.error.clone())
-    })
+    SINK.get().and_then(|s| s.error.lock().unwrap().clone())
 }
 
 pub fn dump_stop() -> std::io::Result<()> {
-    if let Some(s) = SINK.get()
-        && let Some(mut w) = s.dump.lock().unwrap().take()
-    {
-        if let Some(e) = w.error {
-            return Err(std::io::Error::other(e));
-        }
-        w.out.flush()?;
-    }
-    Ok(())
+    let Some(sink) = SINK.get() else {
+        return Ok(());
+    };
+    let (reply, result) = mpsc::channel();
+    sink.queue.send(Work::Stop(reply)).map_err(|_| {
+        std::io::Error::other(t!("ETW worker stopped", "Рабочий поток ETW остановился"))
+    })?;
+    result.recv().map_err(|_| {
+        std::io::Error::other(t!("ETW worker stopped", "Рабочий поток ETW остановился"))
+    })?
 }
 
 #[cfg(test)]
@@ -507,7 +567,8 @@ mod tests {
     fn parses_packet_event() {
         let frame = [0xAAu8; 60];
         let d = event(1, &frame);
-        let (g, lt, orig, f) = packet(&d).unwrap();
+        let (g, number, lt, orig, f) = packet(&d).unwrap();
+        assert_eq!(number, 1);
         assert_eq!((g, lt, orig, f.len()), (42, 1, 60, 60));
         let mut bad = d.clone();
         bad.pop();
@@ -532,5 +593,67 @@ mod tests {
         r.push(&out, &mut pk);
         assert_eq!(pk.len(), 1);
         assert_eq!(pk[0].dport, 53);
+    }
+    #[test]
+    fn packet_group_keeps_distinct_numbers_and_drops_component_duplicates() {
+        let mut d = Dedup {
+            order: VecDeque::new(),
+            set: HashSet::new(),
+        };
+        assert!(d.first((42, 1)));
+        assert!(d.first((42, 2)));
+        assert!(!d.first((42, 1)));
+        for id in 0..9000 {
+            d.first((id + 100, 1));
+        }
+        assert_eq!(d.set.len(), 8192);
+        assert_eq!(d.order.len(), 8192);
+    }
+
+    #[test]
+    fn worker_orders_recording_controls_and_drains_queued_frames() {
+        let dir = crate::paths::TestDir::new("etw-worker");
+        let path = dir.0.join("demo.pcapng");
+        let (queue, events) = mpsc::sync_channel(4);
+        let metrics = std::sync::Arc::new(crate::capture::Metrics::default());
+        let sink = Sink {
+            queue,
+            metrics: metrics.clone(),
+            error: Mutex::new(None),
+            bad: AtomicU64::new(0),
+        };
+        let (packets, mut received) = tokio::sync::mpsc::channel(4);
+        std::thread::scope(|scope| {
+            let worker =
+                scope.spawn(|| consume(events, PacketSender::new(packets, metrics), &sink));
+            let (reply, result) = mpsc::channel();
+            sink.queue
+                .send(Work::Start(path.to_string_lossy().into_owned(), reply))
+                .unwrap();
+            result.recv().unwrap().unwrap();
+            let frame = [
+                0x45, 0, 0, 28, 0, 0, 0, 0, 64, 17, 0, 0, 192, 0, 2, 1, 198, 51, 100, 1, 0x9c,
+                0x40, 0x01, 0xbb, 0, 8, 0, 0,
+            ];
+            let first = event(3, &frame);
+            let mut next = first.clone();
+            next[8..10].copy_from_slice(&2u16.to_le_bytes());
+            for data in [first.clone(), first, next] {
+                sink.queue
+                    .send(Work::Frame(data, 133_000_000_000_000_000))
+                    .unwrap();
+            }
+            let (reply, result) = mpsc::channel();
+            sink.queue.send(Work::Stop(reply)).unwrap();
+            result.recv().unwrap().unwrap();
+            sink.queue.send(Work::Shutdown).unwrap();
+            worker.join().unwrap();
+        });
+        assert_eq!(received.len(), 2);
+        assert_eq!(received.try_recv().unwrap().sport, 40000);
+        let mut reader = pcap::PcapngReader::new();
+        let mut frames = Vec::new();
+        reader.push(&std::fs::read(path).unwrap(), &mut frames);
+        assert_eq!(frames.len(), 2);
     }
 }
