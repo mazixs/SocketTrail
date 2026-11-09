@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.3.0 - 2026-11-09
 
 - Dumps: process filtering always runs. Capture losses become warnings instead of
   leaving the whole file unfiltered, and frame types PktMon reports without SocketTrail
