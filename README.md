@@ -87,10 +87,14 @@ Start **SocketTrail** from the application menu or run `sockettrail`.
 
 ### Windows 10 and 11
 
-Download `SocketTrail-<version>-windows-x64.zip` from
-[Releases](https://github.com/mazixs/SocketTrail/releases/latest), extract it and run
-`sockettrail.exe`. Nothing to install. The exe is not signed yet, so SmartScreen may
-ask: **More info** -> **Run anyway**.
+[Releases](https://github.com/mazixs/SocketTrail/releases/latest) have two builds:
+
+- `SocketTrail-<version>-windows-x64-setup.exe` installs the program with a Start menu
+  shortcut and an entry in **Installed apps**. A new version installs over the old one.
+- `SocketTrail-<version>-windows-x64-portable.zip` needs no installation: extract it and
+  run `sockettrail.exe`.
+
+The exe is not signed yet, so SmartScreen may ask: **More info** -> **Run anyway**.
 
 The process and connection list works right away. The **Restart as administrator**
 button in the window turns on packet capture: domains of browsers, traffic volume and

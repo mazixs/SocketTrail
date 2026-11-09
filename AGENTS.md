@@ -12,7 +12,7 @@ SocketTrail — монитор сетевых соединений для Linux 
 - `cargo fmt --check` — проверить форматирование; `cargo fmt` — исправить его.
 - `cargo clippy --all-targets` и `cargo test` — проверить код и выполнить тесты.
 - `packaging/smoke.sh target/release/sockettrail` — после сборки проверить запуск и HTTP API.
-- `make deb` и `make win` — создать Linux-пакет и Windows-архив.
+- `make deb` и `make win` — создать Linux-пакет и портативный Windows-архив; `make win-setup` дополнительно собирает установщик Inno Setup, `packaging/setup-smoke.sh` проверяет его установку и удаление.
 
 Для Windows на Linux нужны mingw-w64, установленная цель `x86_64-pc-windows-gnu` и WineHQ 10+. Выполняйте `cargo clippy --all-targets --target x86_64-pc-windows-gnu` и `CARGO_TARGET_X86_64_PC_WINDOWS_GNU_RUNNER=wine cargo test --target x86_64-pc-windows-gnu`. На настоящей Windows без Visual Studio подойдут тулчейн `stable-x86_64-pc-windows-gnu` и MinGW-w64, подробности в `docs/development.md`. Окончания строк задает `.gitattributes`: LF везде, кроме `*.bat` и `*.cmd`.
 

@@ -6,14 +6,15 @@ and how much, plus recording the traffic of a selected process into .pcapng.
 
 Running
 -------
-1. Extract the archive to any folder and run sockettrail.exe.
+1. Installed version: start SocketTrail from the Start menu. It is removed in
+   Settings -> Apps -> Installed apps; dumps and settings are kept.
+   Portable version: extract the archive to any folder and run sockettrail.exe.
 2. A Microsoft Edge (or Chrome) window with the interface opens. No CMD/PowerShell
    console opens. Closing the application window exits the program.
 3. Windows may show "Windows protected your PC": the exe is not signed yet.
    Click "More info" -> "Run anyway".
 
-Without installation and without administrator rights the process and
-connection list works, and domains come from the Windows DNS cache (Chrome and
+Without administrator rights the process and connection list works, and domains come from the Windows DNS cache (Chrome and
 Edge will not have them: browsers use their own DNS client). Domains appear
 gradually, within a few seconds.
 
@@ -74,14 +75,16 @@ SocketTrail для Windows
 
 Запуск
 ------
-1. Распакуйте архив в любую папку и запустите sockettrail.exe.
+1. Установленная версия: запустите SocketTrail из меню "Пуск". Удаляется она в
+   Параметры -> Приложения -> Установленные приложения, дампы и настройки
+   сохраняются.
+   Портативная версия: распакуйте архив в любую папку и запустите sockettrail.exe.
 2. Откроется окно Microsoft Edge (или Chrome) с интерфейсом. Консоль
    CMD/PowerShell не открывается. Закрытие окна приложения завершает работу.
 3. Windows может показать "Система Windows защитила ваш компьютер": exe пока
    не подписан. Нажмите "Подробнее" -> "Выполнить в любом случае".
 
-Без установки и без прав администратора работают список процессов и соединений,
-а домены берутся из DNS-кеша Windows (у Chrome и Edge их не будет: у браузеров
+Без прав администратора работают список процессов и соединений, а домены берутся из DNS-кеша Windows (у Chrome и Edge их не будет: у браузеров
 свой DNS-клиент). Домены появляются постепенно, в течение нескольких секунд.
 
 Права администратора

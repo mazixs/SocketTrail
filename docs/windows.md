@@ -2,13 +2,34 @@
 
 **English** | [Русский](ru/windows.md) · [Back to README](../README.md)
 
-SocketTrail for Windows is a portable zip: `sockettrail.exe`, `README.txt` and
-`LICENSE.txt`. Nothing to install. The exe is built with a static CRT and depends
-only on system DLLs. Windows 10 and 11, x64.
+SocketTrail for Windows comes in two builds with the same `sockettrail.exe`:
+
+| Build | File |
+|---|---|
+| Installer | `SocketTrail-<version>-windows-x64-setup.exe` |
+| Portable | `SocketTrail-<version>-windows-x64-portable.zip` |
+
+The exe is built with a static CRT and depends only on system DLLs. Windows 10 and 11, x64.
+
+## Installation
+
+The installer puts the program into `C:\Program Files\SocketTrail` for all users or,
+when **Install for me only** is chosen, into `%LOCALAPPDATA%\Programs\SocketTrail`
+without administrator rights. It adds a Start menu shortcut, an optional desktop
+shortcut and an entry in **Settings** -> **Apps** -> **Installed apps**. A new version
+is installed over the previous one; a running SocketTrail is closed first.
+Uninstalling removes the program and keeps dumps, cache and settings, see
+[Where data is stored](#where-data-is-stored).
+
+Silent installation: `SocketTrail-<version>-windows-x64-setup.exe /VERYSILENT`, add
+`/CURRENTUSER` for a per-user install.
+
+The portable zip needs no installation: extract it to any folder.
 
 ## Running
 
-1. Extract the archive to any folder and run `sockettrail.exe`.
+1. Start **SocketTrail** from the Start menu or run `sockettrail.exe` from the
+   extracted folder.
 2. A Microsoft Edge or Chrome window with the interface opens. No CMD/PowerShell console opens.
    Closing the application window exits the program and finalizes an unfinished dump.
 3. The exe is not signed yet, so SmartScreen may show "Windows protected your PC":
@@ -85,13 +106,13 @@ An explicit `--no-open` launch from a terminal writes to that existing terminal;
 
 ## Verifying a download
 
-Every release has a `SHA256SUMS` file and a GitHub build attestation that ties the zip
-to the workflow run that built it:
+Every release has a `SHA256SUMS` file and a GitHub build attestation that ties each
+file to the workflow run that built it:
 
 ```powershell
-$zip = Get-Item .\SocketTrail-*-windows-x64.zip
-Get-FileHash $zip -Algorithm SHA256
-gh attestation verify $zip --repo mazixs/SocketTrail
+$file = Get-Item .\SocketTrail-*-windows-x64-setup.exe   # or -portable.zip
+Get-FileHash $file -Algorithm SHA256
+gh attestation verify $file --repo mazixs/SocketTrail
 ```
 
 Compare the hash with the line in `SHA256SUMS`. The last command needs the

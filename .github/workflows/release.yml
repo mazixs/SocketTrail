@@ -48,7 +48,7 @@ jobs:
         with:
           toolchain: stable
       - run: cargo test --locked
-      - name: Build zip (msvc, static CRT)
+      - name: Build portable zip (msvc, static CRT)
         shell: bash
         env:
           TARGET: x86_64-pc-windows-msvc
@@ -56,10 +56,20 @@ jobs:
         run: packaging/build-win.sh
       - run: packaging/smoke.sh target/windows/SocketTrail/sockettrail.exe
         shell: bash
+      # Inno Setup is not part of the windows-2025 image.
+      - run: choco install innosetup --version 6.7.1 -y --no-progress
+      - name: Build installer
+        shell: bash
+        run: bash packaging/build-win-setup.sh
+      - name: Install, smoke-test and uninstall
+        shell: bash
+        run: bash packaging/setup-smoke.sh target/windows/SocketTrail-*-windows-x64-setup.exe
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: win
-          path: target/windows/*.zip
+          path: |
+            target/windows/*.zip
+            target/windows/*-setup.exe
           if-no-files-found: error
 
   release:
@@ -83,6 +93,7 @@ jobs:
           subject-path: |
             dist/*.deb
             dist/*.zip
+            dist/*.exe
       - name: CHANGELOG section for this version
         run: |
           v=${GITHUB_REF_NAME#v}
@@ -95,4 +106,5 @@ jobs:
           files: |
             dist/*.deb
             dist/*.zip
+            dist/*.exe
             dist/SHA256SUMS

@@ -117,3 +117,11 @@ jobs:
         run: packaging/build-win.sh
       - run: packaging/smoke.sh target/windows/SocketTrail/sockettrail.exe
         shell: bash
+      # Inno Setup is not part of the windows-2025 image.
+      - run: choco install innosetup --version 6.7.1 -y --no-progress
+      - name: Build installer as in the release
+        shell: bash
+        run: bash packaging/build-win-setup.sh
+      - name: Install, smoke-test and uninstall
+        shell: bash
+        run: bash packaging/setup-smoke.sh target/windows/SocketTrail-*-windows-x64-setup.exe

@@ -25,7 +25,8 @@ Shell scripts would break with CRLF, which Git for Windows applies by default.
 | `make install` / `make uninstall` | install into `~/.local/bin` with a menu shortcut, or remove |
 | `make check` | tells whether packet capture works without root |
 | `make deb` | `target/debian/sockettrail_<version>_amd64.deb` |
-| `make win` | portable `target/windows/SocketTrail-<version>-windows-x64.zip` |
+| `make win` | portable `target/windows/SocketTrail-<version>-windows-x64-portable.zip` |
+| `make win-setup` | the zip and the installer `target/windows/SocketTrail-<version>-windows-x64-setup.exe` |
 
 Arguments after `./run.sh` go to the program: `./run.sh --lang ru --port 8790`.
 
@@ -95,6 +96,14 @@ The release zip is built on `windows-2025` for `x86_64-pc-windows-msvc` with a s
 CRT (`+crt-static`), so the exe needs no Visual C++ runtime. Icon, version info and
 manifest are embedded by `build.rs`.
 
+The installer is built with [Inno Setup 6](https://jrsoftware.org/isinfo.php) from
+`packaging/sockettrail.iss`. `packaging/build-win-setup.sh` packs the folder staged by
+`packaging/build-win.sh` and finds `ISCC.exe` in the standard install folders, under
+Wine in `~/.wine`, or by the `ISCC` variable. On Windows Inno Setup is installed with
+`winget install JRSoftware.InnoSetup`. `packaging/setup-smoke.sh <setup.exe>` installs
+the build silently into a temporary folder, runs the API smoke test and uninstalls it;
+it refuses to run while SocketTrail is installed on the machine.
+
 ## Packages
 
 `make deb` builds a package with the binary in `/usr/bin`, the menu shortcut, the icon
@@ -106,7 +115,8 @@ the one of the build machine: the release is built on Ubuntu 24.04, which means 
 
 `.github/workflows/ci.yml` runs on every push to `main` and on pull requests: fmt and
 clippy for both targets, tests on Ubuntu 24.04 and 26.04, under WineHQ and on Windows,
-and a smoke test of every build.
+and a smoke test of every build, including a silent install and uninstall of the
+Windows installer.
 
 A release is made by a tag:
 
@@ -115,7 +125,7 @@ A release is made by a tag:
 3. Commit, push, then `git tag vX.Y.Z && git push origin vX.Y.Z`.
 
 `.github/workflows/release.yml` checks that the tag matches `Cargo.toml`, builds the
-`.deb` and the zip, writes `SHA256SUMS`, creates build attestations and publishes the
+`.deb`, the portable zip and the installer, writes `SHA256SUMS`, creates build attestations and publishes the
 release with the CHANGELOG section as its notes. GitHub keeps attestations only for
 public repositories, so while the repository is private this step is skipped.
 

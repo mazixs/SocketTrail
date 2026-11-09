@@ -25,7 +25,8 @@
 | `make install` / `make uninstall` | ставит в `~/.local/bin` с ярлыком в меню или удаляет |
 | `make check` | проверяет, работает ли захват пакетов без root |
 | `make deb` | `target/debian/sockettrail_<версия>_amd64.deb` |
-| `make win` | портативный `target/windows/SocketTrail-<версия>-windows-x64.zip` |
+| `make win` | портативный `target/windows/SocketTrail-<версия>-windows-x64-portable.zip` |
+| `make win-setup` | zip и установщик `target/windows/SocketTrail-<версия>-windows-x64-setup.exe` |
 
 Аргументы после `./run.sh` передаются программе: `./run.sh --lang ru --port 8790`.
 
@@ -97,6 +98,14 @@ WineHQ 10 или новее. На настоящей Windows запускайт�
 CRT (`+crt-static`), поэтому exe не нужен Visual C++ runtime. Иконку, сведения о
 версии и манифест встраивает `build.rs`.
 
+Установщик собирается [Inno Setup 6](https://jrsoftware.org/isinfo.php) по сценарию
+`packaging/sockettrail.iss`. `packaging/build-win-setup.sh` упаковывает папку, которую
+готовит `packaging/build-win.sh`, и ищет `ISCC.exe` в стандартных папках установки, под
+Wine в `~/.wine` или по переменной `ISCC`. На Windows Inno Setup ставится командой
+`winget install JRSoftware.InnoSetup`. `packaging/setup-smoke.sh <setup.exe>` тихо
+ставит сборку во временную папку, выполняет smoke-проверку API и удаляет ее; при уже
+установленном на машине SocketTrail проверка не запускается.
+
 ## Пакеты
 
 `make deb` собирает пакет с бинарем в `/usr/bin`, ярлыком в меню, иконкой и
@@ -107,8 +116,8 @@ CRT (`+crt-static`), поэтому exe не нужен Visual C++ runtime. Ик
 ## CI и релизы
 
 `.github/workflows/ci.yml` запускается на каждый push в `main` и на pull request: fmt и
-clippy для обеих целей, тесты на Ubuntu 24.04 и 26.04, под WineHQ и на Windows, Smoke
-тест каждой сборки.
+clippy для обеих целей, тесты на Ubuntu 24.04 и 26.04, под WineHQ и на Windows, smoke-проверка каждой сборки, включая тихую установку и удаление
+Windows-установщика.
 
 Релиз выпускается по тегу:
 
@@ -117,7 +126,7 @@ clippy для обеих целей, тесты на Ubuntu 24.04 и 26.04, по
 3. Закоммитьте, сделайте push, затем `git tag vX.Y.Z && git push origin vX.Y.Z`.
 
 `.github/workflows/release.yml` проверяет, что тег совпадает с `Cargo.toml`, собирает
-`.deb` и zip, пишет `SHA256SUMS`, создает аттестации сборки и публикует релиз с
+`.deb`, портативный zip и установщик, пишет `SHA256SUMS`, создает аттестации сборки и публикует релиз с
 разделом CHANGELOG в описании. GitHub хранит аттестации только для публичных
 репозиториев, поэтому, пока репозиторий приватный, этот шаг пропускается.
 

@@ -2,13 +2,34 @@
 
 [English](../windows.md) | **Русский** · [К README](../../README.ru.md)
 
-SocketTrail для Windows — это портативный zip: `sockettrail.exe`, `README.txt` и
-`LICENSE.txt`. Устанавливать ничего не нужно. Exe собран со статическим CRT и зависит
-только от системных DLL. Windows 10 и 11, x64.
+SocketTrail для Windows выходит в двух сборках с одним и тем же `sockettrail.exe`:
+
+| Сборка | Файл |
+|---|---|
+| Установщик | `SocketTrail-<версия>-windows-x64-setup.exe` |
+| Портативная | `SocketTrail-<версия>-windows-x64-portable.zip` |
+
+Exe собран со статическим CRT и зависит только от системных DLL. Windows 10 и 11, x64.
+
+## Установка
+
+Установщик ставит программу в `C:\Program Files\SocketTrail` для всех пользователей
+или, если выбрать **Установить только для меня**, в `%LOCALAPPDATA%\Programs\SocketTrail`
+без прав администратора. Он добавляет ярлык в меню «Пуск», по желанию ярлык на рабочем
+столе и запись в **Параметры** -> **Приложения** -> **Установленные приложения**. Новая
+версия ставится поверх прежней, запущенный SocketTrail перед этим закрывается.
+Удаление убирает программу и сохраняет дампы, кеш и настройки, см.
+[Где лежат данные](#где-лежат-данные).
+
+Тихая установка: `SocketTrail-<версия>-windows-x64-setup.exe /VERYSILENT`, для установки
+только для текущего пользователя добавьте `/CURRENTUSER`.
+
+Портативный zip устанавливать не нужно: распакуйте его в любую папку.
 
 ## Запуск
 
-1. Распакуйте архив в любую папку и запустите `sockettrail.exe`.
+1. Запустите **SocketTrail** из меню «Пуск» или `sockettrail.exe` из папки, куда
+   распакован архив.
 2. Откроется окно Microsoft Edge или Chrome с интерфейсом. Консоль CMD/PowerShell не открывается.
    Закрытие окна приложения завершает работу, незаконченный дамп дописывается.
 3. Exe пока не подписан, поэтому SmartScreen может показать "Система Windows защитила
@@ -89,12 +110,12 @@ VPN, и при разбиении он попадает в отдельную ч
 ## Проверка загрузки
 
 У каждого релиза есть файл `SHA256SUMS` и аттестация сборки GitHub, которая
-связывает zip с запуском workflow, собравшим его:
+связывает каждый файл с запуском workflow, собравшим его:
 
 ```powershell
-$zip = Get-Item .\SocketTrail-*-windows-x64.zip
-Get-FileHash $zip -Algorithm SHA256
-gh attestation verify $zip --repo mazixs/SocketTrail
+$file = Get-Item .\SocketTrail-*-windows-x64-setup.exe   # или -portable.zip
+Get-FileHash $file -Algorithm SHA256
+gh attestation verify $file --repo mazixs/SocketTrail
 ```
 
 Сравните хеш со строкой в `SHA256SUMS`. Для последней команды нужен

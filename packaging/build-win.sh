@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Portable build: target/windows/SocketTrail-<version>-windows-x64.zip
+# Portable build: target/windows/SocketTrail-<version>-windows-x64-portable.zip
 # Locally with mingw (x86_64-pc-windows-gnu), in CI on Windows with TARGET=x86_64-pc-windows-msvc.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -9,7 +9,7 @@ TARGET=${TARGET:-x86_64-pc-windows-gnu}
 PYTHON=${PYTHON:-python3}
 OUT=target/windows
 DIR=$OUT/SocketTrail
-ZIP=$OUT/SocketTrail-$VERSION-windows-x64.zip
+ZIP=$OUT/SocketTrail-$VERSION-windows-x64-portable.zip
 
 cargo build --locked --release --target "$TARGET"
 

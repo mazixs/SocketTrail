@@ -29,6 +29,11 @@
 - Export: reports and JSON follow list filters, sort order and table checkboxes.
 - Code: `main.rs` is split into `app`, `api`, `query`, `recording`, `dumpfile` and
   `localtime`.
+- Windows: an installer `SocketTrail-<version>-windows-x64-setup.exe` built with Inno
+  Setup, for all users or per user, with a Start menu shortcut, upgrades over the
+  previous version and an uninstaller that keeps dumps and settings. The portable zip is
+  now `SocketTrail-<version>-windows-x64-portable.zip`. CI installs, smoke-tests and
+  uninstalls the installer on every run.
 - Build: `.gitattributes` keeps LF everywhere, and the Wine runner moved from
   `.cargo/config.toml` to an environment variable, so tests run natively on Windows.
 
