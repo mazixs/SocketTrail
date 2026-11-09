@@ -49,6 +49,10 @@ pub struct SockEntry {
 }
 
 /// Имя состояния UDP-сокета: без удаленного адреса он просто слушает порт.
+/// Соединение открыто, но его точное состояние прочитать не удалось: известное раньше
+/// остается в силе (см. sockets::windows).
+pub const STATE_OPEN: &str = "OPEN";
+
 pub fn udp_state(rport: u16) -> &'static str {
     if rport == 0 { "UNCONNECTED" } else { "ACTIVE" }
 }

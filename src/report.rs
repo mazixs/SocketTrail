@@ -28,8 +28,8 @@ fn bytes(n: u64) -> String {
 pub fn render(title: &str, generated: &str, conns: &[Conn]) -> String {
     let title = esc(title);
     let generated = esc(generated);
-    let uniq_ips: std::collections::BTreeSet<&str> =
-        conns.iter().map(|c| c.remote.as_str()).collect();
+    let uniq_ips: std::collections::BTreeSet<std::net::IpAddr> =
+        conns.iter().map(|c| c.remote).collect();
     let uniq_dom: std::collections::BTreeSet<&str> =
         conns.iter().filter_map(|c| c.domain.as_deref()).collect();
     let tx: u64 = conns.iter().map(|c| c.tx_bytes).sum();
@@ -44,12 +44,12 @@ pub fn render(title: &str, generated: &str, conns: &[Conn]) -> String {
                  <td class=dim>{net}</td><td>{proc}</td><td class=mono>{tx}</td>\
                  <td class=mono>{rx}</td></tr>",
                 proto = c.proto,
-                state = esc(&c.state),
+                state = esc(c.state),
                 dom = c.domain.as_deref().map(esc).unwrap_or_else(|| format!(
                     "<span class=dim>{}</span>",
                     tr("no name", "имени нет")
                 )),
-                ip = esc(&c.remote),
+                ip = c.remote,
                 port = c.rport,
                 net = esc(&format!(
                     "{} {}",

@@ -200,6 +200,11 @@ impl Live {
     }
 }
 
+/// dumpcap пишет файл сам и о своих потерях программе не сообщает.
+pub fn system_lost() -> u64 {
+    0
+}
+
 pub async fn start_live(iface: &str, tx: PacketSender) -> Result<Live, Text> {
     probe()?;
     spawn_live(iface, tx)

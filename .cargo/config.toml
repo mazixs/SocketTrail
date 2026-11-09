@@ -1,7 +1,8 @@
-# Локальная сборка под Windows: mingw-w64 + проверка под Wine.
+# Сборка под Windows через mingw-w64: на Linux кросс-компиляция, на Windows - без Visual Studio.
+# Запускающую среду здесь не указываем: на настоящей Windows exe запускается сам, а под
+# Linux CI и разработчик задают CARGO_TARGET_X86_64_PC_WINDOWS_GNU_RUNNER=wine.
 [target.x86_64-pc-windows-gnu]
 linker = "x86_64-w64-mingw32-gcc"
-runner = "wine"
 
 # Релизная сборка на windows-runner: без зависимости от vcruntime140.dll.
 [target.x86_64-pc-windows-msvc]

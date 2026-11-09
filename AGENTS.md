@@ -2,19 +2,19 @@
 
 ## Структура проекта
 
-SocketTrail - монитор сетевых соединений для Linux и Windows на Rust 2024; минимальная версия Rust - 1.89. `src/main.rs` содержит запуск и HTTP API, остальные модули отвечают за захват, разрешение доменов, историю и экспорт. Платформенные реализации находятся в `src/procs/`, `src/sockets/` и `src/capture/`. Windows использует только собственный движок PktMon/ETW, без Wireshark, Npcap и dumpcap. Интерфейс с HTML, CSS и JavaScript расположен в `ui/index.html`, без отдельной frontend-сборки. `assets/` содержит иконки, манифест и службу; `packaging/` - сборку пакетов и smoke-проверку. Документация находится в `docs/`, переводы - в `docs/ru/`, тестовые пакеты - в `src/testdata/`.
+SocketTrail — монитор сетевых соединений для Linux и Windows на Rust 2024; минимальная версия Rust — 1.89. `src/main.rs` содержит запуск и окно, `src/app.rs` — состояние и фоновые циклы, `src/api.rs` — HTTP API, `src/query.rs` — отбор, сортировку и сводки таблицы, `src/recording.rs` и `src/dumpfile.rs` — запись и файлы дампов; остальные модули отвечают за захват, разрешение доменов, историю и экспорт. Платформенные реализации находятся в `src/procs/`, `src/sockets/` и `src/capture/`. Windows использует только собственный движок PktMon/ETW, без Wireshark, Npcap и dumpcap. Интерфейс с HTML, CSS и JavaScript расположен в `ui/index.html`, без отдельной frontend-сборки. `assets/` содержит иконки, манифест и службу; `packaging/` — сборку пакетов и smoke-проверку. Документация находится в `docs/`, переводы — в `docs/ru/`, тестовые пакеты — в `src/testdata/`.
 
 ## Сборка и разработка
 
-- `make run` или `./run.sh --lang ru --port 8790` - собрать при необходимости и запустить приложение.
-- `make build` - собрать release-бинарник в `target/release/`.
-- `make check` - проверить доступность захвата через `dumpcap` без root.
-- `cargo fmt --check` - проверить форматирование; `cargo fmt` - исправить его.
-- `cargo clippy --all-targets` и `cargo test` - проверить код и выполнить тесты.
-- `packaging/smoke.sh target/release/sockettrail` - после сборки проверить запуск и HTTP API.
-- `make deb` и `make win` - создать Linux-пакет и Windows-архив.
+- `make run` или `./run.sh --lang ru --port 8790` — собрать при необходимости и запустить приложение.
+- `make build` — собрать release-бинарник в `target/release/`.
+- `make check` — проверить доступность захвата через `dumpcap` без root.
+- `cargo fmt --check` — проверить форматирование; `cargo fmt` — исправить его.
+- `cargo clippy --all-targets` и `cargo test` — проверить код и выполнить тесты.
+- `packaging/smoke.sh target/release/sockettrail` — после сборки проверить запуск и HTTP API.
+- `make deb` и `make win` — создать Linux-пакет и Windows-архив.
 
-Для Windows на Linux нужны mingw-w64, установленная цель `x86_64-pc-windows-gnu` и WineHQ 10+. Выполняйте `cargo clippy --all-targets --target x86_64-pc-windows-gnu` и `cargo test --target x86_64-pc-windows-gnu`.
+Для Windows на Linux нужны mingw-w64, установленная цель `x86_64-pc-windows-gnu` и WineHQ 10+. Выполняйте `cargo clippy --all-targets --target x86_64-pc-windows-gnu` и `CARGO_TARGET_X86_64_PC_WINDOWS_GNU_RUNNER=wine cargo test --target x86_64-pc-windows-gnu`. На настоящей Windows без Visual Studio подойдут тулчейн `stable-x86_64-pc-windows-gnu` и MinGW-w64, подробности в `docs/development.md`. Окончания строк задает `.gitattributes`: LF везде, кроме `*.bat` и `*.cmd`.
 
 ## Стиль и локализация
 

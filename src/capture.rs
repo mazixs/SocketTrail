@@ -17,13 +17,49 @@ use std::sync::{
 };
 use tokio::sync::mpsc;
 
-pub const QUEUE_CAPACITY: usize = 8192;
+/// Очередь разбора к таблице соединений. Держит всплеск на несколько секунд, пока
+/// таблицу блокирует опрос или API.
+pub const QUEUE_CAPACITY: usize = 65_536;
 
 #[derive(Default)]
 pub struct Metrics {
+    /// Пакеты, не попавшие в учет соединений: очередь к таблице переполнена.
     pub dropped: AtomicU64,
     pub accepted: AtomicU64,
     pub processed: AtomicU64,
+    /// Кадры, не попавшие в файл дампа: захват не успевал за трафиком.
+    pub lost_frames: AtomicU64,
+    /// Кадры неизвестного формата. В дамп не идут, но и потерями не считаются:
+    /// это не трафик приложений, а служебные типы пакетов драйвера.
+    pub unsupported: AtomicU64,
+}
+
+/// Значения счетчиков потерь на момент снимка: запись сравнивает их со стартовыми.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Losses {
+    pub dropped: u64,
+    pub lost_frames: u64,
+    pub unsupported: u64,
+}
+
+impl Metrics {
+    pub fn losses(&self) -> Losses {
+        Losses {
+            dropped: self.dropped.load(Ordering::Relaxed),
+            lost_frames: self.lost_frames.load(Ordering::Relaxed) + system_lost(),
+            unsupported: self.unsupported.load(Ordering::Relaxed),
+        }
+    }
+}
+
+impl Losses {
+    pub fn since(self, start: Self) -> Self {
+        Self {
+            dropped: self.dropped.saturating_sub(start.dropped),
+            lost_frames: self.lost_frames.saturating_sub(start.lost_frames),
+            unsupported: self.unsupported.saturating_sub(start.unsupported),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -76,5 +112,28 @@ mod queue_tests {
         assert_eq!(rx.len(), 2);
         drop(rx);
         assert!(sender.send(packet).is_err());
+    }
+
+    #[test]
+    fn losses_during_recording_are_counted_from_its_start() {
+        let start = Losses {
+            dropped: 5,
+            lost_frames: 1,
+            unsupported: 9,
+        };
+        let now = Losses {
+            dropped: 7,
+            lost_frames: 1,
+            unsupported: 12,
+        };
+        assert_eq!(
+            now.since(start),
+            Losses {
+                dropped: 2,
+                lost_frames: 0,
+                unsupported: 3
+            }
+        );
+        assert_eq!(start.since(now).dropped, 0);
     }
 }

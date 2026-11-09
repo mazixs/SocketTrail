@@ -1,5 +1,37 @@
 # Changelog
 
+## Unreleased
+
+- Dumps: process filtering always runs. Capture losses become warnings instead of
+  leaving the whole file unfiltered, and frame types PktMon reports without SocketTrail
+  parsing them no longer count as losses.
+- Dumps: optional compaction (the start of each flow and DNS stay whole, on by default
+  in the window) and splitting into parts by domain and subnet. A summary with domains,
+  subnets and packet totals replaces the long JSON map, connections move to
+  `.connections.jsonl`, and the connection map no longer stops a recording at its limit.
+- Dumps panel: file status, summary in the window, and filtering, compaction and
+  splitting of recorded files, including dumps of earlier versions.
+- Ownership: a late packet after a socket closed no longer takes the owner from a UDP
+  flow, and several sockets of one process are no longer a dispute. A TCP tuple held
+  again by the same process instance keeps its owner.
+- Windows: a shifted state field in the TCP table, visible as `LISTENING` with a remote
+  address in `netstat`, no longer closes connections or disputes their owners. Such
+  rows show their last reliable state, or `OPEN`. TCP `CLOSE` is now `CLOSED` everywhere.
+- Table: sorting by any column including time and state, filters by lists with subdomains
+  and subnets nested, filter chips, one-click filters from a row, pause and server-side
+  pages. New **By domain** and **By subnet** views open into the list and return back.
+- Interface: mode badge instead of the interface name, a banner that can be hidden, the
+  **Proton** tab hidden on Windows, a process tree ordered by name and processes that
+  keep their row for 30 seconds after the last activity. A selected process that exited
+  stays in the table.
+- Capture: larger packet and ETW queues, batched packet accounting, a PktMon session left
+  by a previous run is stopped at startup, OEM console output of `pktmon` is decoded.
+- Export: reports and JSON follow list filters, sort order and table checkboxes.
+- Code: `main.rs` is split into `app`, `api`, `query`, `recording`, `dumpfile` and
+  `localtime`.
+- Build: `.gitattributes` keeps LF everywhere, and the Wine runner moved from
+  `.cargo/config.toml` to an environment variable, so tests run natively on Windows.
+
 ## v0.2.4 - 2026-10-07
 
 - Ownership: recording groups and socket owners include process start time; reused

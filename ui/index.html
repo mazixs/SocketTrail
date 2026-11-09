@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="__LANG__">
+<html lang="__LANG__" data-os="__OS__">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -18,7 +18,7 @@
   --on-accent:#0d1117;--on-hot:#1a0d10;--sel-bg:rgba(122,162,247,.16);
   --h:30px;--r:7px;--r-lg:10px;--fs:13px;--fs-s:12px;
   --ease:cubic-bezier(.22,1,.36,1);
-  --z-sticky:2;--z-grip:5;--z-toast:20;
+  --z-sticky:2;--z-grip:5;--z-toast:20;--z-pop:30;
 }
 @media (prefers-color-scheme:light){:root{
   color-scheme:light;
@@ -152,8 +152,9 @@ main{display:flex;flex-direction:column;min-width:0;min-height:0}
 .warn pre{margin:6px 0 0;font-family:ui-monospace,monospace;font-size:var(--fs-s);color:var(--dim);white-space:pre-wrap}
 .bar{display:flex;align-items:center;gap:10px;padding:0 14px;min-height:50px;border-bottom:1px solid var(--line);
  background:var(--panel);flex-wrap:wrap}
-.bar .field{flex:1;min-width:220px;max-width:340px}
-.selinfo{color:var(--dim);font-size:var(--fs-s);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.bar .field{flex:1;min-width:170px;max-width:340px}
+.selinfo{color:var(--dim);font-size:var(--fs-s);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+ min-width:0;flex:0 1 auto}
 .selinfo b{color:var(--txt);font-weight:600}
 
 .dumps{padding:12px 14px;border-bottom:1px solid var(--line);background:var(--panel2);font-size:var(--fs)}
@@ -182,17 +183,19 @@ tbody tr:hover.dead td{opacity:.8}
 td.num{text-align:right}
 th.num{text-align:right}
 .st{display:inline-flex;align-items:center;height:18px;font-size:10.5px;font-weight:650;padding:0 7px;
- border-radius:9px;white-space:nowrap;letter-spacing:.02em}
-.st.ESTABLISHED,.st.ACTIVE,.st.live{background:color-mix(in srgb,var(--ok) 16%,transparent);color:var(--ok)}
-.st.CLOSED,.st.TIME_WAIT,.st.CLOSE_WAIT,.st.FIN_WAIT1,.st.FIN_WAIT2,.st.LAST_ACK,.st.gone
- {background:color-mix(in srgb,var(--dim) 16%,transparent);color:var(--dim)}
+ border-radius:9px;white-space:nowrap;letter-spacing:.02em;
+ background:color-mix(in srgb,var(--dim) 16%,transparent);color:var(--dim)}
+.st.ESTABLISHED,.st.OPEN,.st.ACTIVE,.st.live{background:color-mix(in srgb,var(--ok) 16%,transparent);color:var(--ok)}
 .st.SYN_SENT,.st.NEW{background:color-mix(in srgb,var(--warn) 16%,transparent);color:var(--warn)}
-.copy{opacity:0;width:22px;height:22px;padding:0;border:0;border-radius:5px;background:transparent;color:var(--dim);
+.copy{width:22px;height:22px;padding:0;border:0;border-radius:5px;background:transparent;color:var(--dim);
  justify-content:center}
 .copy .ic{width:13px;height:13px}
-tr:hover .copy,.copy:focus-visible{opacity:1}
 .copy:hover{color:var(--accent);background:var(--line)}
-.cell{display:flex;align-items:center;gap:6px;min-width:0}
+.cell{position:relative;display:flex;align-items:center;gap:6px;min-width:0}
+/* значки поверх конца строки: пока они скрыты, место у текста не отнимают */
+.hover-acts{position:absolute;right:0;top:50%;transform:translateY(-50%);display:flex;gap:2px;padding-left:14px;
+ background:linear-gradient(to right,transparent,var(--hover) 12px);opacity:0;pointer-events:none}
+tr:hover .hover-acts,.hover-acts:focus-within{opacity:1;pointer-events:auto}
 .cell span.txt{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .tag.p-TCP{background:color-mix(in srgb,var(--dim) 16%,transparent);color:var(--txt)}
 .tag.p-UDP{background:color-mix(in srgb,var(--warn) 18%,transparent);color:var(--warn)}
@@ -201,6 +204,92 @@ tr:hover .copy,.copy:focus-visible{opacity:1}
 .empty{padding:64px 20px;text-align:center;color:var(--dim)}
 .empty h3{color:var(--txt);margin:0 0 6px;font-weight:600;font-size:15px}
 .plist .empty{padding:28px 12px}
+
+/* ---------- сортировка и отбор ---------- */
+html[data-os="windows"] [data-f="proton"]{display:none}
+button:disabled{opacity:.45;cursor:default}
+th[data-k]{cursor:pointer}
+th[data-k]:hover{color:var(--txt)}
+th.sorted{color:var(--txt)}
+th .th{display:flex;align-items:center;gap:4px;min-width:0;padding-right:4px}
+th.num .th{justify-content:flex-end}
+th .lbl{overflow:hidden;text-overflow:ellipsis}
+th .arr{color:var(--accent);font-weight:700;flex:none}
+.fbtn{width:20px;height:20px;padding:0;border:0;border-radius:5px;background:transparent;color:var(--dim);
+ justify-content:center;opacity:0}
+.fbtn .ic{width:12px;height:12px}
+th:hover .fbtn,.fbtn:focus-visible,.fbtn.on{opacity:1}
+.fbtn:hover{background:var(--line);color:var(--txt)}
+.fbtn.on{color:var(--accent)}
+tr.drill{cursor:pointer}
+.st[data-fk]{cursor:pointer}
+.st[data-fk]:hover{filter:brightness(1.15)}
+.cell .copy{flex:none}
+
+.mode{height:24px;padding:0 10px;border-radius:12px;font-size:var(--fs-s);border-color:transparent;font-weight:600;
+ background:color-mix(in srgb,var(--ok) 14%,transparent);color:var(--ok);cursor:default}
+.mode:hover{background:color-mix(in srgb,var(--ok) 14%,transparent);border-color:transparent}
+.mode.basic{background:color-mix(in srgb,var(--warn) 16%,transparent);color:var(--warn);cursor:pointer}
+.mode.basic:hover{background:color-mix(in srgb,var(--warn) 26%,transparent)}
+
+.chips{display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:6px 14px;border-bottom:1px solid var(--line);
+ background:var(--panel)}
+.chip{display:inline-flex;align-items:center;gap:5px;height:24px;padding:0 3px 0 9px;border-radius:12px;
+ background:var(--sel-bg);font-size:var(--fs-s);max-width:360px}
+.chip .val{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.chip-x{width:18px;height:18px;padding:0;border:0;border-radius:50%;background:transparent;color:var(--dim);
+ justify-content:center}
+.chip-x .ic{width:11px;height:11px}
+.chip-x:hover{background:var(--line);color:var(--txt)}
+.chips button.ghost{height:24px;font-size:var(--fs-s);padding:0 8px}
+
+.pager{display:flex;align-items:center;gap:10px;min-height:38px;padding:0 14px;border-top:1px solid var(--line);
+ background:var(--panel);font-size:var(--fs-s);color:var(--dim);flex-wrap:wrap}
+.pager b{color:var(--txt);font-weight:600;font-variant-numeric:tabular-nums}
+.pager label{display:flex;align-items:center;gap:6px}
+select{font:inherit;font-size:var(--fs-s);color:var(--txt);background:var(--panel2);border:1px solid var(--line);
+ border-radius:var(--r);height:26px;padding:0 6px}
+.pager .group{height:26px}
+.pager .group>button{padding:0 8px}
+#btn-pause.on{color:var(--warn);border-color:var(--warn)}
+
+.pop{position:fixed;z-index:var(--z-pop);background:var(--panel);border:1px solid var(--line2);
+ border-radius:var(--r-lg);box-shadow:0 10px 30px rgba(0,0,0,.28);padding:8px;display:flex;flex-direction:column;gap:6px}
+#colpop{width:320px;max-height:min(440px,72vh)}
+#colpop .field input{height:28px}
+.fvals{overflow:auto;flex:1;min-height:0}
+.fv{display:flex;align-items:center;gap:6px;min-height:26px;padding:0 4px;border-radius:5px;cursor:pointer;
+ font-size:var(--fs-s)}
+.fv:hover{background:var(--hover)}
+.fv .fl{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.fv .fc{color:var(--dim);font-variant-numeric:tabular-nums;flex:none}
+.fv.kid{padding-left:26px}
+.fv .twist{margin-right:-2px}
+.pop-foot{display:flex;align-items:center;gap:8px;justify-content:space-between;font-size:var(--fs-s);color:var(--dim)}
+.pop-foot button{height:24px;font-size:var(--fs-s);padding:0 8px}
+#dumpopts{width:340px;font-size:var(--fs-s)}
+.optrow{display:flex;flex-direction:column;gap:3px;padding:4px}
+.optrow .hint{color:var(--dim);line-height:1.35}
+.optline{display:flex;align-items:center;justify-content:space-between;gap:8px}
+
+.dumps{max-height:46vh;overflow:auto}
+.dumps td.f{max-width:420px}
+.dumps td.acts{white-space:nowrap;overflow:visible}
+.dumps td.acts button{height:24px;font-size:var(--fs-s);padding:0 8px;margin-right:4px}
+.dumps td.acts button.primary{color:var(--on-accent)}
+.dumps td.tags{overflow:visible}
+.dumps td.tags .tag{margin-right:4px}
+.tag.s-filtered{background:color-mix(in srgb,var(--ok) 16%,transparent);color:var(--ok)}
+.tag.s-unfiltered{background:color-mix(in srgb,var(--warn) 18%,transparent);color:var(--warn)}
+.tag.s-host,.tag.s-unknown,.tag.t-plain{background:color-mix(in srgb,var(--dim) 16%,transparent);color:var(--dim)}
+.sumbox{white-space:normal;padding:6px 0 12px}
+.sumhead{color:var(--txt);margin-bottom:6px}
+.sumwarn{color:var(--warn);margin-bottom:6px}
+.sumgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:14px}
+.sumgrid h4{margin:0 0 4px;font-size:var(--fs-s);font-weight:600;color:var(--txt)}
+.sumline{display:flex;justify-content:space-between;gap:10px;font-size:var(--fs-s);color:var(--dim)}
+.sumline span:first-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.warn .close{margin-left:auto;flex:none}
 
 .toast{position:fixed;right:16px;bottom:16px;display:flex;gap:10px;align-items:flex-start;
  background:var(--panel);border:1px solid var(--line2);border-radius:var(--r-lg);padding:11px 14px;max-width:520px;
@@ -233,6 +322,11 @@ tr:hover .copy,.copy:focus-visible{opacity:1}
   <symbol id="i-ok" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="m8.5 12 2.5 2.5 4.5-5"/></symbol>
   <symbol id="i-alert" viewBox="0 0 24 24"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/><path d="M12 9v4M12 17h.01"/></symbol>
   <symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></symbol>
+  <symbol id="i-pause" viewBox="0 0 24 24"><path d="M9 5v14M15 5v14"/></symbol>
+  <symbol id="i-play" viewBox="0 0 24 24"><path d="m7 5 12 7-12 7Z"/></symbol>
+  <symbol id="i-caret" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+  <symbol id="i-back" viewBox="0 0 24 24"><path d="M19 12H5M11 6l-6 6 6 6"/></symbol>
+  <symbol id="i-sort" viewBox="0 0 24 24"><path d="M7 4v16M7 20l-3-3M7 20l3-3M17 20V4M17 4l-3 3M17 4l3 3"/></symbol>
 </svg>
 <div class="app">
   <header>
@@ -242,11 +336,12 @@ tr:hover .copy,.copy:focus-visible{opacity:1}
       <span id="s-matched-wrap"><b id="s-matched">0</b> <span data-t>in view</span></span>
       <span><b id="s-stored">0</b> <span data-t>in history</span></span>
       <span><b id="s-pkts">0</b> <span data-t>packets</span></span>
-      <span><span data-t>interface</span> <b id="s-if">-</b></span>
     </div>
+    <button id="btn-mode" class="mode"></button>
     <div class="spacer"></div>
     <div class="dumpctl">
       <label class="opt" title="Only traffic of the selected process and its child processes stays in the file. Recording stops by itself when the process exits"><input type="checkbox" id="onlyproc" checked> <span data-t>process only</span></label>
+      <button id="btn-dumpopts" class="icon" style="border-radius:0;border-right:0" title="Dump settings" aria-label="Dump settings"><svg class="ic"><use href="#i-caret"/></svg></button>
       <button id="btn-dump" class="primary"></button>
     </div>
     <div class="group" role="toolbar" aria-label="Export">
@@ -272,6 +367,7 @@ tr:hover .copy,.copy:focus-visible{opacity:1}
           <button data-f="proton">Proton</button>
           <button data-f="all" data-t>All</button>
         </div>
+        <button id="btn-procsort" class="ghost icon" title="Order of the list" aria-label="Order of the list"><svg class="ic"><use href="#i-sort"/></svg></button>
         <label class="chk" title="Show SocketTrail itself and its dumpcap"><input type="checkbox" id="showself"> <span data-t>self</span></label>
       </div>
     </div>
@@ -288,7 +384,9 @@ tr:hover .copy,.copy:focus-visible{opacity:1}
       </div>
       <div class="group" id="viewmode">
         <button data-v="list" class="on" data-t>List</button>
-        <button data-v="agg" data-t>By address</button>
+        <button data-v="address" data-t>By address</button>
+        <button data-v="domain" data-t>By domain</button>
+        <button data-v="subnet" data-t>By subnet</button>
       </div>
       <div class="group" id="proto" role="group" aria-label="Protocol">
         <button data-p="" class="on" data-t>All</button>
@@ -299,9 +397,9 @@ tr:hover .copy,.copy:focus-visible{opacity:1}
         <input id="qc" placeholder="Domain, IP, port, ASN" title="Domain, IP, port, ASN or protocol: tcp, udp" aria-label="Connection filter"></div>
       <label class="chk"><input type="checkbox" id="showlocal"> <span data-t>local addresses</span></label>
       <label class="chk"><input type="checkbox" id="showselfc"> <span data-t>SocketTrail connections</span></label>
-      <div class="spacer"></div>
-      <span class="selinfo" id="selinfo"></span>
+      <button id="btn-pause" title="Stop updating the table so that rows stay in place"><svg class="ic"><use href="#i-pause"/></svg><span id="pause-txt"></span></button>
     </div>
+    <div id="chips" class="chips" style="display:none"></div>
     <div id="dumps" class="dumps" style="display:none"></div>
     <div class="tbl" id="tblwrap">
       <table id="tbl">
@@ -310,18 +408,55 @@ tr:hover .copy,.copy:focus-visible{opacity:1}
           <col data-k="net"><col data-k="proc"><col data-k="tx"><col data-k="rx">
         </colgroup>
         <thead><tr>
-          <th data-k="time"><span data-t>Time</span></th><th data-k="state"><span data-t>State</span></th>
-          <th data-k="dom"><span data-t>Domain / name</span></th><th data-k="ip"><span data-t>Address</span></th>
-          <th data-k="port"><span data-t>Port</span></th><th data-k="net"><span data-t>Network owner</span></th>
-          <th data-k="proc"><span id="th-proc"></span></th><th data-k="tx" class="num"><span data-t>Out</span></th>
-          <th data-k="rx" class="num"><span data-t>In</span></th>
+          <th data-k="time"><span class="th"><span class="lbl" data-t>Time</span><span class="arr"></span></span></th>
+          <th data-k="state"><span class="th"><span class="lbl" data-t>State</span><span class="arr"></span><button class="fbtn" data-col="state" title="Filter by list" aria-label="Filter by list"><svg class="ic"><use href="#i-filter"/></svg></button></span></th>
+          <th data-k="dom"><span class="th"><span class="lbl" id="th-dom"></span><span class="arr"></span><button class="fbtn" data-col="dom" title="Filter by list" aria-label="Filter by list"><svg class="ic"><use href="#i-filter"/></svg></button></span></th>
+          <th data-k="ip"><span class="th"><span class="lbl" id="th-ip"></span><span class="arr"></span><button class="fbtn" data-col="ip" title="Filter by list" aria-label="Filter by list"><svg class="ic"><use href="#i-filter"/></svg></button></span></th>
+          <th data-k="port"><span class="th"><span class="lbl" id="th-port"></span><span class="arr"></span><button class="fbtn" data-col="port" title="Filter by list" aria-label="Filter by list"><svg class="ic"><use href="#i-filter"/></svg></button></span></th>
+          <th data-k="net"><span class="th"><span class="lbl" data-t>Network owner</span><span class="arr"></span><button class="fbtn" data-col="net" title="Filter by list" aria-label="Filter by list"><svg class="ic"><use href="#i-filter"/></svg></button></span></th>
+          <th data-k="proc"><span class="th"><span class="lbl" id="th-proc"></span><span class="arr"></span><button class="fbtn" data-col="proc" title="Filter by list" aria-label="Filter by list"><svg class="ic"><use href="#i-filter"/></svg></button></span></th>
+          <th data-k="tx" class="num"><span class="th"><span class="lbl" data-t>Out</span><span class="arr"></span></span></th>
+          <th data-k="rx" class="num"><span class="th"><span class="lbl" data-t>In</span><span class="arr"></span></span></th>
         </tr></thead>
         <tbody id="rows"></tbody>
       </table>
-      <div class="empty" id="empty"><h3 data-t>Nothing here yet</h3>
-        <div data-t>Pick a process on the left or switch to "Whole host".</div></div>
+      <div class="empty" id="empty"><h3 id="empty-h"></h3><div id="empty-t"></div></div>
+    </div>
+    <div class="pager" id="pager">
+      <span id="pg-info"></span>
+      <span class="selinfo" id="selinfo"></span>
+      <span class="spacer"></span>
+      <label><span data-t>Rows per page</span>
+        <select id="pg-size" aria-label="Rows per page">
+          <option>100</option><option selected>200</option><option>500</option><option>1000</option>
+        </select>
+      </label>
+      <div class="group" role="group" aria-label="Pages">
+        <button id="pg-first" aria-label="First page">«</button>
+        <button id="pg-prev" aria-label="Previous page">‹</button>
+        <button id="pg-num" tabindex="-1" style="cursor:default"></button>
+        <button id="pg-next" aria-label="Next page">›</button>
+        <button id="pg-last" aria-label="Last page">»</button>
+      </div>
     </div>
   </main>
+</div>
+<div class="pop" id="colpop" style="display:none" role="dialog" aria-label="Filter by list"></div>
+<div class="pop" id="dumpopts" style="display:none" role="dialog" aria-label="Dump settings">
+  <div class="optrow">
+    <label class="chk"><input type="checkbox" id="opt-compact"> <span data-t>Compact file</span></label>
+    <div class="hint" data-t>Keeps the first 64 KiB of each flow and all DNS whole, later packets keep their headers and 16 bytes of data. Addresses, ports, times and original sizes stay. Usually several times smaller.</div>
+  </div>
+  <div class="optrow">
+    <div class="optline"><span data-t>Split into parts</span>
+      <select id="opt-split" aria-label="Split into parts">
+        <option value="auto" data-t>When large</option>
+        <option value="always" data-t>Always</option>
+        <option value="never" data-t>Never</option>
+      </select>
+    </div>
+    <div class="hint" data-t>A folder next to the dump gets one file per domain or subnet: the 64 largest by volume, the rest in other. Large means over 64 MiB.</div>
+  </div>
 </div>
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
@@ -329,18 +464,33 @@ tr:hover .copy,.copy:focus-visible{opacity:1}
 const $ = s => document.querySelector(s);
 const ic = id => `<svg class="ic"><use href="#i-${id}"/></svg>`;
 const state = {
-  selected:null, filter:'active', scope:'proc', view:'list', proto:'',
+  selected:null, selectedName:null, selectedGone:false, filter:'active', scope:'proc', view:'list', proto:'',
   showLocal:false, showSelf:false, dump:null, dumpBusy:false, procs:[],
   collapsed:new Set(), opened:new Set(), lastRows:[], busy:false,
+  sort:{key:'time', dir:'desc'}, page:0, pages:1, limit:200, filters:{}, paused:false, renderOnce:false,
+  back:null, capture:true, elevate:false, procSort:'name', job:null,
 };
 
-const DEFAULT_W = {time:84,state:118,dom:230,ip:150,port:100,net:170,proc:150,tx:84,rx:84};
+// Настройки окна. Хранилище может быть недоступно: без него работают значения по умолчанию.
+const saved = {
+  get(k, d){ try { const v = localStorage.getItem('st.' + k); return v === null ? d : v; } catch(e) { return d; } },
+  set(k, v){ try { localStorage.setItem('st.' + k, v); } catch(e) {} },
+};
+
+const VIEW_SORT = {
+  list: {key:'time', dir:'desc'}, address: {key:'time', dir:'desc'},
+  domain: {key:'dom', dir:'asc'}, subnet: {key:'dom', dir:'asc'},
+};
+const FILTER_COLS = ['state', 'dom', 'ip', 'port', 'net', 'proc'];
+const COL_NAMES = {state:'State', dom:'Domain / name', ip:'Address', port:'Port', net:'Network owner', proc:'Process'};
+
+const DEFAULT_W = {time:84,state:128,dom:240,ip:160,port:110,net:170,proc:170,tx:88,rx:88};
 
 /* ---------- язык: английский в разметке, русский из словаря ---------- */
 
 let LANG = document.documentElement.lang === 'ru' ? 'ru' : 'en';
 const RU = {
-  'in view': 'в выборке', 'in history': 'в истории', 'packets': 'пакетов', 'interface': 'интерфейс',
+  'in view': 'в выборке', 'in history': 'в истории', 'packets': 'пакетов',
   'process only': 'только процесс',
   'Only traffic of the selected process and its child processes stays in the file. Recording stops by itself when the process exits':
     'В файле останется только трафик выбранного процесса и его дочерних процессов. Запись остановится сама, когда процесс завершится',
@@ -354,7 +504,7 @@ const RU = {
   'self': 'свои', 'Show SocketTrail itself and its dumpcap': 'Показать сам SocketTrail и его dumpcap',
   'Drag to change the width': 'Потяните, чтобы изменить ширину',
   'Drag to change the width. Double click fits the content': 'Потяните, чтобы изменить ширину. Двойной клик - по содержимому',
-  'Process': 'Процесс', 'Whole host': 'Весь хост', 'List': 'Список', 'By address': 'Сводка по адресам',
+  'Process': 'Процесс', 'Whole host': 'Весь хост', 'List': 'Список', 'By address': 'По адресам',
   'Domain, IP, port, ASN': 'Домен, IP, порт, ASN', 'Protocol': 'Протокол',
   'Domain, IP, port, ASN or protocol: tcp, udp': 'Домен, IP, порт, ASN или протокол: tcp, udp', 'Connection filter': 'Фильтр соединений',
   'local addresses': 'локальные адреса', 'SocketTrail connections': 'соединения SocketTrail',
@@ -378,17 +528,15 @@ const RU = {
   'local port {p}, last activity {t}': 'локальный порт {p}, последняя активность {t}',
   'last activity {t}': 'последняя активность {t}',
   'Process exited, recording stopped: {p}': 'Процесс завершился, запись остановлена: {p}',
-  '<b>{a}</b> addresses, <b>{c}</b> connections': '<b>{a}</b> адресов, <b>{c}</b> соединений',
-  '<b>{n}</b> in view': '<b>{n}</b> в выборке', ', shown {n}': ', показано {n}',
+  '<b>{n}</b> in view': '<b>{n}</b> в выборке',
   'Packet tracking dropped: {n}': 'Потеряно при пакетном учете: {n}',
-  'Packet capture is active': 'Пакетный захват активен', 'Packet capture unavailable': 'Пакетный захват недоступен',
+  'Packet capture is active': 'Пакетный захват активен',
   '<b>Packet capture is off.</b> {h}': '<b>Захват пакетов выключен.</b> {h}',
   'Restart as administrator': 'Перезапустить от администратора',
   '<b>Packet capture is off.</b> Domains and short connections will not be shown, only socket polling remains. {h}':
     '<b>Пакетный захват выключен.</b> Домены и короткие соединения показаны не будут, остается только опрос сокетов. {h}',
   '{name} {pid}, group of {n}': '{name} {pid}, в группе {n}',
   'no process selected, showing the whole host': 'процесс не выбран, показан весь хост',
-  'Packet capture unavailable, recording may not start': 'Пакетный захват недоступен, запись может не начаться',
   'Stop': 'Остановить', 'Record dump': 'Собрать дамп', 'Please wait': 'Подождите',
   'Recording could not be saved: {e}': 'Не удалось сохранить запись: {e}',
   'Unfiltered traffic remains in {p}': 'Нефильтрованный трафик остался в {p}',
@@ -402,6 +550,49 @@ const RU = {
   'Dumps are saved to {d}': 'Дампы сохраняются в {d}', 'Open folder': 'Открыть папку', 'Copy path': 'Скопировать путь',
   'Hide': 'Скрыть', 'No dumps recorded yet.': 'Пока ни одного дампа не собрано.',
   'Could not open the folder, path: {d}': 'Не удалось открыть папку, путь: {d}',
+  'By domain': 'По доменам', 'By subnet': 'По подсетям',
+  'Full mode': 'Полный режим', 'Basic mode': 'Базовый режим',
+  'Full mode: traffic volume, domains of all programs, short connections, UDP and dumps. Capture: {e}.':
+    'Полный режим: объем трафика, домены всех программ, короткие соединения, UDP и дампы. Захват: {e}.',
+  'Basic mode: processes and TCP connections without traffic volume, UDP targets and dumps. Click to restart as administrator.':
+    'Базовый режим: процессы и TCP-соединения без объема трафика, целей UDP и дампов. Нажмите, чтобы перезапустить от администратора.',
+  'Basic mode: processes and TCP connections without traffic volume, UDP targets and dumps. Packet capture is not available.':
+    'Базовый режим: процессы и TCP-соединения без объема трафика, целей UDP и дампов. Пакетный захват недоступен.',
+  'Frames lost: {n}': 'Потеряно кадров: {n}',
+  'Dump settings': 'Настройки дампа', 'Compact file': 'Сокращать файл',
+  'Keeps the first 64 KiB of each flow and all DNS whole, later packets keep their headers and 16 bytes of data. Addresses, ports, times and original sizes stay. Usually several times smaller.':
+    'Первые 64 КиБ каждого потока и весь DNS остаются целиком, у остальных пакетов — заголовки и 16 байт данных. Адреса, порты, время и исходные размеры сохраняются. Обычно файл становится в несколько раз меньше.',
+  'Split into parts': 'Разбивать на части', 'When large': 'Если большой', 'Always': 'Всегда', 'Never': 'Никогда',
+  'A folder next to the dump gets one file per domain or subnet: the 64 largest by volume, the rest in other. Large means over 64 MiB.':
+    'Рядом с дампом появится папка: по файлу на домен или подсеть, 64 самых объемных, остальное в other. Большой — значит больше 64 МиБ.',
+  'Order of the list': 'Порядок списка', 'List order: by name': 'Порядок списка: по имени',
+  'List order: by connections, rows move as they change': 'Порядок списка: по числу соединений, строки будут двигаться',
+  'Filter by list': 'Отбор по списку', 'Search in the list': 'Поиск по списку',
+  'Stop updating the table so that rows stay in place': 'Остановить обновление таблицы, чтобы строки стояли на месте',
+  'Pause': 'Пауза', 'Resume': 'Продолжить',
+  'Rows per page': 'Строк на странице', 'Pages': 'Страницы', 'First page': 'Первая страница',
+  'Previous page': 'Предыдущая страница', 'Next page': 'Следующая страница', 'Last page': 'Последняя страница',
+  '{a}–{b} of {n}': '{a}–{b} из {n}', '0 of 0': '0 из 0', 'page {p} of {n}': 'стр. {p} из {n}',
+  'Back to summary': 'Назад к сводке', 'Reset filters': 'Сбросить отбор', 'Remove filter': 'Убрать отбор',
+  'Show only this': 'Показать только это', 'Reset': 'Сбросить', 'not known': 'неизвестно',
+  'The list is cut at {n} values, use the search field of the table': 'Список обрезан на {n} значениях, воспользуйтесь полем поиска над таблицей',
+  'No values': 'Значений нет', 'Nothing matches the filters': 'По этому отбору ничего нет',
+  'Change or reset the filters above the table.': 'Измените или сбросьте отбор над таблицей.',
+  'Addresses': 'Адреса', 'Ports': 'Порты', 'Subnet': 'Подсеть',
+  '{name} {pid} has exited, its connections stay in the table': '{name} {pid} завершился, его соединения остаются в таблице',
+  'Recording needs administrator rights: restart with the button in the header': 'Для записи нужны права администратора: перезапустите кнопкой в шапке',
+  'Packet capture unavailable': 'Пакетный захват недоступен',
+  'parts: {n}': 'частей: {n}',
+  'only the process': 'только процесс', 'not filtered': 'не отфильтрован', 'all traffic': 'весь трафик', 'no details': 'нет сведений',
+  'compact': 'сокращен', 'with losses': 'есть потери', 'failed': 'с ошибкой', 'recording': 'идет запись', 'processing': 'обработка',
+  'Filter': 'Отфильтровать', 'Compact': 'Сократить', 'Split': 'Разбить', 'Summary': 'Сводка', 'Open parts': 'Открыть части',
+  'Keep only the connections of the recorded process': 'Оставить только соединения записанного процесса',
+  'Reduce the file: headers and the start of each flow stay': 'Уменьшить файл: заголовки и начало каждого потока останутся',
+  'One file per domain or subnet in a folder next to the dump': 'По файлу на домен или подсеть в папке рядом с дампом',
+  'Done: {p}': 'Готово: {p}', 'Processing failed: {e}': 'Обработка не выполнена: {e}',
+  'Domains': 'Домены', 'Subnets': 'Подсети', 'Parts': 'Части',
+  '{k} of {n} packets kept': 'Оставлено пакетов: {k} из {n}', 'data {a}, in the file {b}': 'данных {a}, в файле {b}',
+  'Warnings:': 'Предупреждения:',
 };
 const t = (en, vars) => {
   const s = LANG === 'ru' && RU[en] || en;
@@ -409,12 +600,13 @@ const t = (en, vars) => {
 };
 const loc = () => LANG === 'ru' ? 'ru-RU' : 'en-US';
 // en: [одно, много], ru: [1, 2-4, 5+]
-const plural = (n, en, ru) => {
-  if (LANG !== 'ru') return n + ' ' + (n === 1 ? en[0] : en[1]);
+const pluralWord = (n, en, ru) => {
+  if (LANG !== 'ru') return n === 1 ? en[0] : en[1];
   const m10 = n % 10, m100 = n % 100;
-  return n + ' ' + (m10 === 1 && m100 !== 11 ? ru[0]
-    : m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14) ? ru[1] : ru[2]);
+  return m10 === 1 && m100 !== 11 ? ru[0]
+    : m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14) ? ru[1] : ru[2];
 };
+const plural = (n, en, ru) => n + ' ' + pluralWord(n, en, ru);
 
 // Надписи разметки: английские оригиналы запоминаются один раз, дальше переводятся из них.
 const ATTRS = ['title', 'placeholder', 'aria-label'];
@@ -487,12 +679,12 @@ async function elevate(){
   else { toast(t('Restart failed: {e}', {e: esc(r.error || '')}), 'bad'); if (b) b.disabled = false; }
 }
 
-function toast(msg, kind){
+function toast(msg, kind, ms){
   const el = $('#toast');
   el.classList.toggle('bad', kind === 'bad');
   el.innerHTML = ic(kind === 'bad' ? 'alert' : 'ok') + `<div>${msg}</div>`;
   el.classList.add('show');
-  clearTimeout(el._h); el._h = setTimeout(() => el.classList.remove('show'), 5200);
+  clearTimeout(el._h); el._h = setTimeout(() => el.classList.remove('show'), ms || 5200);
 }
 
 async function copy(text, what){
@@ -539,6 +731,7 @@ function initResizers(){
 
     grip.addEventListener('mousedown', e => {
       e.preventDefault(); e.stopPropagation();
+      gripDrag = true;
       const x0 = e.clientX, w0 = col.getBoundingClientRect().width;
       const move = ev => { col.style.width = Math.max(56, w0 + ev.clientX - x0) + 'px'; };
       const up = () => {
@@ -546,6 +739,8 @@ function initResizers(){
         document.removeEventListener('mouseup', up);
         document.body.style.cursor = '';
         saveWidths();
+        // click придет сразу за mouseup, и это не сортировка
+        setTimeout(() => { gripDrag = false; }, 0);
       };
       document.addEventListener('mousemove', move);
       document.addEventListener('mouseup', up);
@@ -623,7 +818,10 @@ function buildTree(procs){
       kids.get(p.ppid).push(p);
     } else roots.push(p);
   }
-  const sort = a => a.sort((x, y) => (y.conns - x.conns) || x.name.localeCompare(y.name) || x.pid - y.pid);
+  // По имени порядок не зависит от трафика, и строки не прыгают.
+  const byName = (x, y) => x.name.localeCompare(y.name) || x.pid - y.pid;
+  const order = state.procSort === 'name' ? byName : (x, y) => (y.conns - x.conns) || byName(x, y);
+  const sort = a => a.sort(order);
   sort(roots);
   for (const v of kids.values()) sort(v);
   return {kids, roots};
@@ -781,44 +979,57 @@ const rowIndex = new Map(); // id -> {tr, sig}
 
 const copyBtn = (v, label) =>
   `<button class="copy" data-copy="${esc(v)}" title="${t(label)}" aria-label="${t(label)}">${ic('copy')}</button>`;
+const onlyBtn = (col, v) =>
+  `<button class="copy" data-fk="${col}" data-fv="${esc(v)}" title="${t('Show only this')}" aria-label="${t('Show only this')}">${ic('filter')}</button>`;
+const hoverActs = (...btns) => `<span class="hover-acts">${btns.join('')}</span>`;
 
 function listRow(c){
   const dom = c.domain ? esc(c.domain) : `<span class="dim">${t('no name')}</span>`;
   const sni = c.sni ? '<span class="tag t-sni">SNI</span>' : '';
   const proc = c.pname
-    ? `${esc(c.pname)} <span class="mono dim">${c.pid}</span>`
+    ? `<div class="cell"><span class="txt">${esc(c.pname)} <span class="mono dim">${c.pid}</span></span>${hoverActs(onlyBtn('proc', c.pname))}</div>`
     : c.from_packets_only
       ? `<span class="tag t-ghost" title="${t('Caught by packet parsing, not in the socket table')}">${t('packets only')}</span>`
       : `<span class="tag t-ghost" title="${t('The socket is in the table, but its process is unknown or the tuple was reused')}">${t('owner unknown')}</span>`;
+  const net = (c.asn || '') + ' ' + (c.owner || '');
   return [
     `<td class="mono dim">${fmtTime(c.first_seen)}</td>`,
-    `<td><span class="st ${esc(c.state)}">${esc(c.state)}</span></td>`,
+    `<td><span class="st ${esc(c.state)}" data-fk="state" data-fv="${esc(c.state)}" title="${t('Show only this')}">${esc(c.state)}</span></td>`,
     `<td><div class="cell"><span class="txt" title="${esc(c.domain || '')}">${dom}</span>${sni}
-       ${copyBtn(c.domain || c.remote, 'Copy name')}</div></td>`,
-    `<td><div class="cell"><span class="txt mono ip">${esc(c.remote)}</span>
-       ${copyBtn(c.remote, 'Copy address')}</div></td>`,
+       ${hoverActs(onlyBtn('dom', c.domain || ''), copyBtn(c.domain || c.remote, 'Copy name'))}</div></td>`,
+    `<td><div class="cell"><span class="txt mono ip" title="${esc(c.remote)}">${esc(c.remote)}</span>
+       ${hoverActs(onlyBtn('ip', c.remote), copyBtn(c.remote, 'Copy address'))}</div></td>`,
     `<td><div class="port mono"><span>${c.rport}</span><span class="tag p-${c.proto}">${c.proto}</span></div></td>`,
-    `<td class="dim" title="${esc((c.asn || '') + ' ' + (c.owner || ''))}">${esc(c.asn || '')} ${esc(c.owner || '')}</td>`,
+    `<td class="dim" title="${esc(net)}">${esc(net)}</td>`,
     `<td>${proc}</td>`,
     `<td class="mono num">${fmtBytes(c.tx_bytes)}</td>`,
     `<td class="mono num">${fmtBytes(c.rx_bytes)}</td>`,
   ].join('');
 }
 
-function aggRow(a){
-  const dom = a.domain ? esc(a.domain) : `<span class="dim">${t('no name')}</span>`;
-  const sni = a.sni ? '<span class="tag t-sni">SNI</span>' : '';
+// Строка сводки: один адрес и порт, один домен или одна подсеть. Клик открывает ее соединения.
+function groupRow(a){
+  const name = state.view === 'address' ? a.domain : a.label;
+  const dom = name ? esc(name) : `<span class="dim">${t('no name')}</span>`;
+  const sni = a.sni && state.view === 'address' ? '<span class="tag t-sni">SNI</span>' : '';
+  const hint = state.view === 'subnet' && a.domain ? ` <span class="dim">${esc(a.domain)}</span>` : '';
   const st = a.live ? `<span class="st live">${plural(a.live, ['active', 'active'], ['активное', 'активных', 'активных'])}</span>`
                     : `<span class="st gone">${t('closed')}</span>`;
+  const addr = a.remote
+    ? `<div class="cell"><span class="txt mono ip" title="${esc(a.remote)}">${esc(a.remote)}</span>${hoverActs(copyBtn(a.remote, 'Copy address'))}</div>`
+    : `<span class="dim">${plural(a.addresses, ['address', 'addresses'], ['адрес', 'адреса', 'адресов'])}</span>`;
+  const port = a.rport !== null
+    ? `<div class="port mono"><span>${a.rport}</span>${a.proto ? `<span class="tag p-${a.proto}">${a.proto}</span>` : ''}</div>`
+    : `<span class="dim">${plural(a.ports, ['port', 'ports'], ['порт', 'порта', 'портов'])}</span>`;
+  const net = (a.asn || '') + ' ' + (a.owner || '');
   return [
     `<td class="mono dim">${fmtTime(a.first_seen)}</td>`,
     `<td>${st}</td>`,
-    `<td><div class="cell"><span class="txt" title="${esc(a.domain || '')}">${dom}</span>${sni}
-       ${copyBtn(a.domain || a.remote, 'Copy name')}</div></td>`,
-    `<td><div class="cell"><span class="txt mono ip">${esc(a.remote)}</span>
-       ${copyBtn(a.remote, 'Copy address')}</div></td>`,
-    `<td><div class="port mono"><span>${a.rport}</span><span class="tag p-${a.proto}">${a.proto}</span></div></td>`,
-    `<td class="dim" title="${esc((a.asn || '') + ' ' + (a.owner || ''))}">${esc(a.asn || '')} ${esc(a.owner || '')}</td>`,
+    `<td><div class="cell"><span class="txt" title="${esc(name || '')}">${dom}${hint}</span>${sni}
+       ${name ? hoverActs(copyBtn(name, 'Copy name')) : ''}</div></td>`,
+    `<td>${addr}</td>`,
+    `<td>${port}</td>`,
+    `<td class="dim" title="${esc(net)}">${esc(net)}</td>`,
     `<td class="dim">${plural(a.sessions, ['session', 'sessions'], ['сессия', 'сессии', 'сессий'])}</td>`,
     `<td class="mono num">${fmtBytes(a.tx_bytes)}</td>`,
     `<td class="mono num">${fmtBytes(a.rx_bytes)}</td>`,
@@ -846,7 +1057,9 @@ function renderRows(items, makeRow, sigOf){
       rec.sig = sig;
     }
     const dead = it.closed !== undefined ? it.closed : !it.live;
-    rec.tr.className = dead ? 'dead' : '';
+    rec.item = it;
+    rec.tr.dataset.id = id;
+    rec.tr.className = (dead ? 'dead' : '') + (state.view === 'list' ? '' : ' drill');
     rec.tr.title = it.lport !== undefined
       ? t('local port {p}, last activity {t}', {p: it.lport, t: fmtTime(it.last_seen)})
       : t('last activity {t}', {t: fmtTime(it.last_seen)});
@@ -860,9 +1073,95 @@ function renderRows(items, makeRow, sigOf){
   }
 }
 
-const stateUrl = () => `/api/state?scope=${state.scope}&view=${state.view}`
-  + `&q=${encodeURIComponent($('#qc').value)}&proto=${state.proto}`
-  + `&show_local=${state.showLocal ? 1 : 0}&show_self=${state.showSelf ? 1 : 0}`;
+const hasFilters = () => FILTER_COLS.some(k => state.filters[k] && state.filters[k].length);
+
+// Параметры одни для строк, списков отбора и выгрузки: отчет совпадает с экраном.
+function tableParams(){
+  const p = new URLSearchParams({
+    scope: state.scope, q: $('#qc').value, proto: state.proto,
+    show_local: state.showLocal ? 1 : 0, show_self: state.showSelf ? 1 : 0,
+    sort: state.sort.key, dir: state.sort.dir,
+  });
+  if (hasFilters()) p.set('filters', JSON.stringify(state.filters));
+  return p;
+}
+const stateUrl = () => `/api/state?view=${state.view}&page=${state.page}&limit=${state.limit}&${tableParams()}`;
+
+function renderHeads(){
+  const list = state.view === 'list';
+  $('#th-dom').textContent = t(state.view === 'subnet' ? 'Subnet' : 'Domain / name');
+  $('#th-ip').textContent = t(list || state.view === 'address' ? 'Address' : 'Addresses');
+  $('#th-port').textContent = t(list || state.view === 'address' ? 'Port' : 'Ports');
+  $('#th-proc').textContent = t(list ? 'Process' : 'Sessions');
+  document.querySelectorAll('#tbl thead th').forEach(th => {
+    const on = th.dataset.k === state.sort.key;
+    th.classList.toggle('sorted', on);
+    th.setAttribute('aria-sort', on ? (state.sort.dir === 'asc' ? 'ascending' : 'descending') : 'none');
+    const arrow = th.querySelector('.arr');
+    if (arrow) arrow.textContent = on ? (state.sort.dir === 'asc' ? '↑' : '↓') : '';
+  });
+  document.querySelector('th[data-k="dom"] .fbtn').dataset.col = state.view === 'subnet' ? 'ip' : 'dom';
+  document.querySelector('th[data-k="proc"] .fbtn').style.display = list ? '' : 'none';
+  document.querySelectorAll('.fbtn').forEach(b => {
+    const f = state.filters[b.dataset.col];
+    b.classList.toggle('on', !!(f && f.length));
+  });
+}
+
+function renderPager(p){
+  state.page = p.page;
+  state.pages = p.pages;
+  const from = p.total ? p.page * p.limit + 1 : 0;
+  const to = Math.min(p.total, (p.page + 1) * p.limit);
+  $('#pg-info').textContent = p.total
+    ? t('{a}–{b} of {n}', {a: fmtNum(from), b: fmtNum(to), n: fmtNum(p.total)}) : t('0 of 0');
+  $('#pg-num').textContent = t('page {p} of {n}', {p: p.page + 1, n: p.pages});
+  $('#pg-first').disabled = $('#pg-prev').disabled = p.page <= 0;
+  $('#pg-next').disabled = $('#pg-last').disabled = p.page >= p.pages - 1;
+}
+
+function renderMode(st){
+  const b = $('#btn-mode');
+  const html = t(st.capture ? 'Full mode' : 'Basic mode');
+  if (b._html !== html){ b.textContent = html; b._html = html; }
+  b.classList.toggle('basic', !st.capture);
+  const losses = [];
+  if (st.lost_frames) losses.push(t('Frames lost: {n}', {n: fmtNum(st.lost_frames)}));
+  if (st.dropped) losses.push(t('Packet tracking dropped: {n}', {n: fmtNum(st.dropped)}));
+  const text = st.capture
+    ? t('Full mode: traffic volume, domains of all programs, short connections, UDP and dumps. Capture: {e}.', {e: st.capture_how || st.iface})
+    : st.elevate
+      ? t('Basic mode: processes and TCP connections without traffic volume, UDP targets and dumps. Click to restart as administrator.')
+      : t('Basic mode: processes and TCP connections without traffic volume, UDP targets and dumps. Packet capture is not available.');
+  b.title = [text, ...losses].join(' ');
+}
+
+// Подсказка о режиме закрывается один раз: после этого остается кнопка в шапке.
+function renderCaptureHint(st){
+  const w = $('#warn');
+  if (w.dataset.offline) return;
+  if (st.capture || !st.capture_hint || saved.get('hintClosed', '') === '1'){
+    w.style.display = 'none';
+    w._html = '';
+    return;
+  }
+  const [head, ...rest] = st.capture_hint.split('\n');
+  const html = ic('alert') + (st.elevate
+    ? `<div>${t('<b>Packet capture is off.</b> {h}', {h: esc(head)})} `
+      + `<button id="btn-elevate" class="primary">${t('Restart as administrator')}</button></div>`
+    : `<div>${t('<b>Packet capture is off.</b> Domains and short connections will not be shown, '
+      + 'only socket polling remains. {h}', {h: esc(head)})}`
+      + (rest.length ? `<pre>${esc(rest.join('\n'))}</pre>` : '') + '</div>')
+    + `<button id="btn-hintclose" class="ghost icon close" title="${t('Hide')}" aria-label="${t('Hide')}">${ic('x')}</button>`;
+  // перерисовка на каждом опросе сбивала бы наведение и нажатие кнопки
+  if (w._html !== html){
+    w.innerHTML = w._html = html;
+    const b = $('#btn-elevate');
+    if (b) b.onclick = elevate;
+    $('#btn-hintclose').onclick = () => { saved.set('hintClosed', '1'); w.style.display = 'none'; };
+  }
+  w.style.display = '';
+}
 
 // Ответ по старым фильтрам или до hardRefresh отбрасывается, и запрос
 // повторяется сразу, а не на следующем тике.
@@ -879,6 +1178,10 @@ async function refresh(){
 
     state.dump = r.dump;
     state.selected = r.selected;
+    state.selectedName = r.selected_name;
+    state.selectedGone = r.selected_gone;
+    state.capture = r.stats.capture;
+    state.elevate = r.stats.elevate;
     const auto = r.dump.auto_stopped;
     if (state.autoSeen === undefined) state.autoSeen = auto;
     else if (auto && auto !== state.autoSeen){
@@ -887,59 +1190,52 @@ async function refresh(){
       else toast(t('Process exited, recording stopped: {p}', {p: `<span class="mono">${esc(auto)}</span>`}));
       if ($('#dumps').style.display !== 'none') renderDumps();
     }
-    // В сводке shown считает адреса, а matched - соединения: подписи разные,
-    // иначе "747 (показано 124)" читается как обрезанная выдача.
-    const total = state.view === 'agg' && r.targets ? r.targets.total : r.stats.matched;
-    $('#s-matched-wrap').innerHTML = state.view === 'agg'
-      ? t('<b>{a}</b> addresses, <b>{c}</b> connections', {a: fmtNum(total), c: fmtNum(r.stats.matched)})
-      : t('<b>{n}</b> in view', {n: fmtNum(r.stats.matched)})
-        + (r.stats.shown < r.stats.matched ? t(', shown {n}', {n: fmtNum(r.stats.shown)}) : '');
+    if (r.dump.job !== state.job){
+      state.job = r.dump.job;
+      if ($('#dumps').style.display !== 'none') renderDumps();
+    }
+    const jobState = $('#job-state');
+    if (jobState && r.dump.job_progress !== null) jobState.textContent = `${t('processing')} ${r.dump.job_progress}%`;
+    const list = state.view === 'list';
+    $('#s-matched-wrap').innerHTML = list
+      ? t('<b>{n}</b> in view', {n: fmtNum(r.stats.matched)})
+      : `<b>${fmtNum(r.page.total)}</b> ${pluralWord(r.page.total, ['group', 'groups'], ['группа', 'группы', 'групп'])}, `
+        + `<b>${fmtNum(r.stats.matched)}</b> ${pluralWord(r.stats.matched, ['connection', 'connections'], ['соединение', 'соединения', 'соединений'])}`;
     $('#s-stored').textContent = fmtNum(r.stats.stored);
     $('#s-pkts').textContent = fmtNum(r.stats.packets);
-    $('#s-if').textContent = r.stats.iface;
-    $('#capled').className = 'dot' + (r.stats.capture ? '' : ' off');
-    $('#capled').title = t(r.stats.capture ? 'Packet capture is active' : 'Packet capture unavailable') + (r.stats.dropped ? '. ' + t('Packet tracking dropped: {n}', {n:r.stats.dropped}) : '');
-    $('#capled').classList.toggle('off', !r.stats.capture || !!r.stats.dropped);
-
-    const w = $('#warn');
-    if (r.stats.capture || !r.stats.capture_hint){ w.style.display = 'none'; delete w.dataset.offline; }
-    else {
-      const [head, ...rest] = r.stats.capture_hint.split('\n');
-      const html = ic('alert') + (r.stats.elevate
-        ? `<div>${t('<b>Packet capture is off.</b> {h}', {h: esc(head)})} `
-          + `<button id="btn-elevate" class="primary">${t('Restart as administrator')}</button></div>`
-        : `<div>${t('<b>Packet capture is off.</b> Domains and short connections will not be shown, '
-          + 'only socket polling remains. {h}', {h: esc(head)})}`
-          + (rest.length ? `<pre>${esc(rest.join('\n'))}</pre>` : '') + '</div>');
-      // перерисовка на каждом опросе сбивала бы наведение и нажатие кнопки
-      if (w._html !== html){
-        w.innerHTML = w._html = html;
-        const b = $('#btn-elevate');
-        if (b) b.onclick = elevate;
-      }
-      w.style.display = '';
-    }
+    const lost = r.stats.dropped || r.stats.lost_frames;
+    $('#capled').title = t(r.stats.capture ? 'Packet capture is active' : 'Packet capture unavailable');
+    $('#capled').className = 'dot' + (r.stats.capture && !lost ? '' : ' off');
+    renderMode(r.stats);
+    renderCaptureHint(r.stats);
 
     const proc = state.procs.find(p => p.pid === r.selected);
-    $('#selinfo').innerHTML = proc
-      ? t('{name} {pid}, group of {n}', {name: esc(proc.name), pid: `<b class="mono">${proc.pid}</b>`,
-          n: plural(r.group.length, ['process', 'processes'], ['процесс', 'процесса', 'процессов'])})
-      : t('no process selected, showing the whole host');
+    const name = (proc && proc.name) || r.selected_name || '';
+    $('#selinfo').innerHTML = r.selected === null
+      ? t('no process selected, showing the whole host')
+      : r.selected_gone
+        ? t('{name} {pid} has exited, its connections stay in the table',
+            {name: esc(name), pid: `<b class="mono">${r.selected}</b>`})
+        : t('{name} {pid}, group of {n}', {name: esc(name), pid: `<b class="mono">${r.selected}</b>`,
+            n: plural(r.group.length, ['process', 'processes'], ['процесс', 'процесса', 'процессов'])});
     $('#selinfo').title = $('#selinfo').textContent;
 
-    $('#th-proc').textContent = t(state.view === 'agg' ? 'Sessions' : 'Process');
-    const items = state.view === 'agg' ? (r.targets ? r.targets.items : []) : r.conns;
+    renderDumpBtn(r.dump);
+    if (state.paused && !state.renderOnce) return;
+    state.renderOnce = false;
+    renderPager(r.page);
+    const items = list ? r.conns : r.targets;
     state.lastRows = items;
     $('#empty').style.display = items.length ? 'none' : '';
+    $('#empty-h').textContent = t(hasFilters() ? 'Nothing matches the filters' : 'Nothing here yet');
+    $('#empty-t').textContent = t(hasFilters() ? 'Change or reset the filters above the table.'
+      : 'Pick a process on the left or switch to "Whole host".');
 
-    if (state.view === 'agg'){
-      renderRows(items, aggRow, a => `${a.live}|${a.sessions}|${a.tx_bytes}|${a.rx_bytes}|${a.domain}|${a.asn}|${a.owner}|${a.sni}|${a.first_seen}`);
-    } else {
+    if (list){
       renderRows(items, listRow, c => `${c.state}|${c.tx_bytes}|${c.rx_bytes}|${c.domain}|${c.asn}|${c.pname}|${c.from_packets_only}|${c.owner}|${c.pid}|${c.sni}|${c.first_seen}`);
+    } else {
+      renderRows(items, groupRow, a => `${a.live}|${a.sessions}|${a.tx_bytes}|${a.rx_bytes}|${a.domain}|${a.label}|${a.asn}|${a.owner}|${a.sni}|${a.first_seen}|${a.addresses}|${a.ports}`);
     }
-
-    renderDumpBtn(r.dump);
-    $('#btn-dump').title = r.stats.capture ? '' : t('Packet capture unavailable, recording may not start');
   } finally {
     state.busy = false;
     if (stale) refresh();
@@ -949,9 +1245,10 @@ async function refresh(){
 function renderDumpBtn(d){
   const b = $('#btn-dump');
   let html;
-  b.disabled = state.dumpBusy || !!(d && d.busy);
+  b.disabled = state.dumpBusy || !!(d && d.busy) || (!state.capture && !(d && d.running));
   if (d && d.busy){
-    html = ic('rec') + t('Please wait');
+    const pct = d.progress === null || d.progress === undefined ? '' : ` ${d.progress}%`;
+    html = ic('rec') + t('Please wait') + pct;
     b.className = 'rec';
   } else if (d && d.running){
     const s = d.started ? Math.max(0, Math.floor((Date.now() - d.started) / 1000)) : 0;
@@ -963,19 +1260,285 @@ function renderDumpBtn(d){
     b.className = 'primary';
   }
   if (b._html !== html){ b.innerHTML = html; b._html = html; }
+  b.title = state.capture ? '' : t(state.elevate
+    ? 'Recording needs administrator rights: restart with the button in the header'
+    : 'Packet capture unavailable');
 }
 
 /* ---------- элементы управления ---------- */
 
-$('#rows').addEventListener('click', e => {
-  const b = e.target.closest('.copy');
-  if (b) copy(b.dataset.copy, b.dataset.copy);
+function setFilter(col, values){
+  if (values.length) state.filters[col] = values; else delete state.filters[col];
+  renderChips();
+  resetPageAndRefresh();
+}
+
+function resetPageAndRefresh(){
+  state.page = 0;
+  renderHeads();
+  hardRefresh();
+}
+
+// Повторный клик по тому же значению снимает отбор: так можно быстро вернуться назад.
+function onlyThis(col, value){
+  const cur = state.filters[col] || [];
+  setFilter(col, cur.length === 1 && cur[0] === value ? [] : [value]);
+}
+
+const valueLabel = (col, v) => v !== '' ? v
+  : t(col === 'dom' ? 'no name' : col === 'proc' ? 'owner unknown' : 'not known');
+
+function renderChips(){
+  const box = $('#chips');
+  let html = state.back
+    ? `<button id="btn-back" class="ghost">${ic('back')}${t('Back to summary')}</button>` : '';
+  for (const col of FILTER_COLS){
+    for (const v of state.filters[col] || []){
+      html += `<span class="chip"><span class="dim">${t(COL_NAMES[col])}:</span> `
+        + `<span class="val mono" title="${esc(valueLabel(col, v))}">${esc(valueLabel(col, v))}</span>`
+        + `<button class="chip-x" data-col="${col}" data-val="${esc(v)}" title="${t('Remove filter')}" aria-label="${t('Remove filter')}">${ic('x')}</button></span>`;
+    }
+  }
+  if (hasFilters()) html += `<button id="btn-reset" class="ghost">${t('Reset filters')}</button>`;
+  box.innerHTML = html;
+  box.style.display = html ? '' : 'none';
+}
+
+$('#chips').addEventListener('click', e => {
+  const x = e.target.closest('.chip-x');
+  if (x){
+    setFilter(x.dataset.col, (state.filters[x.dataset.col] || []).filter(v => v !== x.dataset.val));
+    return;
+  }
+  if (e.target.closest('#btn-reset')){
+    state.filters = {};
+    state.back = null;
+    renderChips();
+    resetPageAndRefresh();
+    return;
+  }
+  if (e.target.closest('#btn-back') && state.back){
+    const b = state.back;
+    state.back = null;
+    state.filters = b.filters;
+    state.sort = b.sort;
+    setView(b.view);
+    state.page = b.page;
+    renderChips();
+    renderHeads();
+    hardRefresh();
+  }
 });
+
+function setView(view){
+  state.view = view;
+  document.querySelectorAll('#viewmode button').forEach(x => x.classList.toggle('on', x.dataset.v === view));
+}
+
+// Переход от строки сводки к ее соединениям. Возврат восстанавливает сводку как была.
+function drill(g){
+  state.back = {view: state.view, filters: {...state.filters}, sort: state.sort, page: state.page};
+  const filters = {...state.filters};
+  if (state.view === 'address'){
+    filters.ip = [g.key];
+    if (g.rport !== null) filters.port = [String(g.rport)];
+  } else if (state.view === 'domain'){
+    filters.dom = [g.key];
+  } else {
+    filters.ip = [g.key];
+  }
+  state.filters = filters;
+  state.sort = VIEW_SORT.list;
+  setView('list');
+  state.page = 0;
+  renderChips();
+  renderHeads();
+  hardRefresh();
+}
+
+$('#rows').addEventListener('click', e => {
+  const c = e.target.closest('.copy[data-copy]');
+  if (c){ copy(c.dataset.copy, c.dataset.copy); return; }
+  const f = e.target.closest('[data-fk]');
+  if (f){ onlyThis(f.dataset.fk, f.dataset.fv); return; }
+  const tr = e.target.closest('tr.drill');
+  if (tr){
+    const rec = rowIndex.get(tr.dataset.id);
+    if (rec) drill(rec.item);
+  }
+});
+
+/* ---------- заголовки: сортировка и отбор по списку ---------- */
+
+function openPop(pop, anchor){
+  pop.style.display = '';
+  const a = anchor.getBoundingClientRect();
+  const left = Math.max(8, Math.min(innerWidth - pop.offsetWidth - 8, a.left));
+  const top = Math.max(8, Math.min(innerHeight - pop.offsetHeight - 8, a.bottom + 4));
+  pop.style.left = left + 'px';
+  pop.style.top = top + 'px';
+}
+
+const facet = {col: null, values: [], query: '', open: new Set(), truncated: false};
+
+function closePops(){
+  $('#colpop').style.display = 'none';
+  $('#dumpopts').style.display = 'none';
+  facet.col = null;
+}
+
+function facetVisible(v, q){
+  return !q || v.value.toLowerCase().includes(q)
+    || (v.children || []).some(c => c.value.toLowerCase().includes(q));
+}
+
+function facetHtml(){
+  const q = facet.query.trim().toLowerCase();
+  const picked = state.filters[facet.col] || [];
+  const nested = facet.values.some(v => v.children && v.children.length);
+  const row = (v, kid) => {
+    const kids = v.children || [];
+    const hit = q && kids.some(c => c.value.toLowerCase().includes(q));
+    const open = facet.open.has(v.value) || hit;
+    const twist = kids.length
+      ? `<span class="twist${open ? ' open' : ''}" data-open="${esc(v.value)}">${ic('chev')}</span>`
+      : nested && !kid ? '<span class="twist leaf"></span>' : '';
+    const line = `<label class="fv${kid ? ' kid' : ''}">${twist}`
+      + `<input type="checkbox" data-v="${esc(v.value)}"${picked.includes(v.value) ? ' checked' : ''}>`
+      + `<span class="fl mono" title="${esc(valueLabel(facet.col, v.value))}">${esc(valueLabel(facet.col, v.value))}</span>`
+      + `<span class="fc">${fmtNum(v.count)}</span></label>`;
+    return open ? line + kids.filter(c => facetVisible(c, q) || !hit).map(c => row(c, true)).join('') : line;
+  };
+  return facet.values.filter(v => facetVisible(v, q)).map(v => row(v, false)).join('')
+    || `<div class="empty" style="padding:16px">${t('No values')}</div>`;
+}
+
+function renderFacets(){
+  const pop = $('#colpop');
+  const note = facet.truncated
+    ? t('The list is cut at {n} values, use the search field of the table', {n: fmtNum(facet.values.length)}) : '';
+  pop.innerHTML = `<div class="field">${ic('search')}<input id="fq" placeholder="${t('Search in the list')}" aria-label="${t('Search in the list')}" value="${esc(facet.query)}"></div>`
+    + `<div class="fvals" id="fvals">${facetHtml()}</div>`
+    + `<div class="pop-foot"><span>${note}</span><button id="fclear" class="ghost">${t('Reset')}</button></div>`;
+  $('#fq').oninput = e => { facet.query = e.target.value; $('#fvals').innerHTML = facetHtml(); };
+  $('#fclear').onclick = () => { setFilter(facet.col, []); $('#fvals').innerHTML = facetHtml(); };
+}
+
+// Список загружается один раз при открытии и не меняется под курсором.
+async function openFacets(col, anchor){
+  if (facet.col === col){ closePops(); return; }
+  closePops();
+  const r = await api(`/api/facets?column=${col}&${tableParams()}`);
+  if (!r) return;
+  facet.col = col;
+  facet.values = r.values;
+  facet.truncated = r.truncated;
+  facet.query = '';
+  facet.open = new Set();
+  renderFacets();
+  openPop($('#colpop'), anchor);
+  $('#fq').focus();
+}
+
+$('#colpop').addEventListener('click', e => {
+  const tw = e.target.closest('[data-open]');
+  if (tw){
+    e.preventDefault();
+    const v = tw.dataset.open;
+    facet.open.has(v) ? facet.open.delete(v) : facet.open.add(v);
+    $('#fvals').innerHTML = facetHtml();
+  }
+});
+$('#colpop').addEventListener('change', e => {
+  const box = e.target.closest('input[type=checkbox]');
+  if (!box) return;
+  const cur = (state.filters[facet.col] || []).filter(v => v !== box.dataset.v);
+  if (box.checked) cur.push(box.dataset.v);
+  setFilter(facet.col, cur);
+});
+document.addEventListener('mousedown', e => {
+  if (e.target.closest('.pop, .fbtn, #btn-dumpopts')) return;
+  closePops();
+});
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closePops(); });
+
+let gripDrag = false;
+document.querySelector('#tbl thead').addEventListener('click', e => {
+  const f = e.target.closest('.fbtn');
+  if (f){ e.stopPropagation(); openFacets(f.dataset.col, f); return; }
+  const th = e.target.closest('th[data-k]');
+  if (!th || gripDrag || e.target.closest('.grip')) return;
+  const key = th.dataset.k;
+  if (state.sort.key === key) state.sort = {key, dir: state.sort.dir === 'asc' ? 'desc' : 'asc'};
+  else state.sort = {key, dir: ['time', 'tx', 'rx'].includes(key) ? 'desc' : 'asc'};
+  resetPageAndRefresh();
+});
+
+/* ---------- страницы и пауза ---------- */
+
+function goPage(n){
+  state.page = Math.max(0, Math.min(state.pages - 1, n));
+  state.renderOnce = true;
+  $('#tblwrap').scrollTop = 0;
+  refresh();
+}
+$('#pg-first').onclick = () => goPage(0);
+$('#pg-prev').onclick = () => goPage(state.page - 1);
+$('#pg-next').onclick = () => goPage(state.page + 1);
+$('#pg-last').onclick = () => goPage(state.pages - 1);
+$('#pg-size').onchange = e => {
+  state.limit = +e.target.value || 200;
+  saved.set('limit', state.limit);
+  resetPageAndRefresh();
+};
+
+function renderPause(){
+  const b = $('#btn-pause');
+  b.classList.toggle('on', state.paused);
+  b.querySelector('use').setAttribute('href', state.paused ? '#i-play' : '#i-pause');
+  $('#pause-txt').textContent = t(state.paused ? 'Resume' : 'Pause');
+}
+$('#btn-pause').onclick = () => {
+  state.paused = !state.paused;
+  renderPause();
+  if (!state.paused) refresh();
+};
+
+/* ---------- настройки дампа ---------- */
+
+$('#opt-compact').checked = saved.get('compact', '1') === '1';
+$('#opt-split').value = saved.get('split', 'auto');
+$('#opt-compact').onchange = e => saved.set('compact', e.target.checked ? '1' : '0');
+$('#opt-split').onchange = e => saved.set('split', e.target.value);
+$('#btn-dumpopts').onclick = e => {
+  const pop = $('#dumpopts');
+  if (pop.style.display === 'none'){ closePops(); openPop(pop, e.currentTarget); } else closePops();
+};
+const dumpOptions = () => ({compact: $('#opt-compact').checked, split: $('#opt-split').value});
+
+$('#btn-mode').onclick = () => {
+  if (!state.capture && state.elevate) elevate();
+};
+
+function renderProcSort(){
+  $('#btn-procsort').title = t(state.procSort === 'name' ? 'List order: by name'
+    : 'List order: by connections, rows move as they change');
+  $('#btn-procsort').classList.toggle('on', state.procSort !== 'name');
+}
+$('#btn-procsort').onclick = () => {
+  state.procSort = state.procSort === 'name' ? 'conns' : 'name';
+  saved.set('procSort', state.procSort);
+  renderProcSort();
+  renderProcs();
+};
 
 let qTimer;
 $('#q').addEventListener('input', () => { clearTimeout(qTimer); qTimer = setTimeout(loadProcs, 160); });
 let qcTimer;
-$('#qc').addEventListener('input', () => { clearTimeout(qcTimer); qcTimer = setTimeout(refresh, 160); });
+$('#qc').addEventListener('input', () => {
+  clearTimeout(qcTimer);
+  qcTimer = setTimeout(() => { state.page = 0; state.renderOnce = true; refresh(); }, 160);
+});
 
 document.querySelectorAll('.filters button').forEach(b => b.onclick = () => {
   document.querySelectorAll('.filters button').forEach(x => x.classList.remove('on'));
@@ -983,15 +1546,19 @@ document.querySelectorAll('.filters button').forEach(b => b.onclick = () => {
 });
 document.querySelectorAll('#scope button').forEach(b => b.onclick = () => {
   document.querySelectorAll('#scope button').forEach(x => x.classList.remove('on'));
-  b.classList.add('on'); state.scope = b.dataset.s; hardRefresh();
+  b.classList.add('on'); state.scope = b.dataset.s; state.page = 0; hardRefresh();
 });
 document.querySelectorAll('#viewmode button').forEach(b => b.onclick = () => {
-  document.querySelectorAll('#viewmode button').forEach(x => x.classList.remove('on'));
-  b.classList.add('on'); state.view = b.dataset.v; hardRefresh();
+  if (state.view === b.dataset.v) return;
+  state.back = null;
+  setView(b.dataset.v);
+  state.sort = VIEW_SORT[b.dataset.v];
+  renderChips();
+  resetPageAndRefresh();
 });
 document.querySelectorAll('#proto button').forEach(b => b.onclick = () => {
   document.querySelectorAll('#proto button').forEach(x => x.classList.remove('on'));
-  b.classList.add('on'); state.proto = b.dataset.p; hardRefresh();
+  b.classList.add('on'); state.proto = b.dataset.p; state.page = 0; hardRefresh();
 });
 $('#showlocal').onchange = e => { state.showLocal = e.target.checked; hardRefresh(); };
 $('#showselfc').onchange = e => {
@@ -1004,13 +1571,18 @@ $('#showself').onchange = e => {
 };
 
 function hardRefresh(){
-  stateGen++; $('#rows').innerHTML = ''; rowIndex.clear(); refresh();
+  stateGen++; state.renderOnce = true; $('#rows').innerHTML = ''; rowIndex.clear(); refresh();
+}
+
+function warningsHtml(list){
+  return (list && list.length)
+    ? '<br><span class="dim">' + t('Warnings:') + ' ' + list.map(esc).join('; ') + '</span>' : '';
 }
 
 function showDumpError(r){
   toast(t('Recording could not be saved: {e}', {e: esc(r.error || t('no connection to SocketTrail'))})
     + (r.unfiltered && r.path ? '<br>' + t('Unfiltered traffic remains in {p}',
-      {p: `<span class="mono">${esc(r.path)}</span>`}) : ''), 'bad');
+      {p: `<span class="mono">${esc(r.path)}</span>`}) : '') + warningsHtml(r.warnings), 'bad', 12000);
 }
 
 $('#btn-dump').onclick = async () => {
@@ -1022,13 +1594,15 @@ $('#btn-dump').onclick = async () => {
       const r = await api('/api/dump/stop', {method:'POST'});
       if (!r || !r.ok) showDumpError(r || {});
       else toast(t('Dump saved: {p}', {p: `<span class="mono">${esc(r.path || '')}</span>`}) + `<br>${fmtBytes(r.size)}`
+        + (r.parts ? ', ' + t('parts: {n}', {n: r.parts}) : '')
         + ` <span class="dim">${t('(the "Dumps" button in the header opens the folder)')}</span>`
-        + (r.sidecar ? `<br><span class="dim">${t('connection map: {p}', {p: esc(r.sidecar)})}</span>` : ''));
+        + (r.sidecar ? `<br><span class="dim">${t('connection map: {p}', {p: esc(r.sidecar)})}</span>` : '')
+        + warningsHtml(r.warnings), '', r.warnings && r.warnings.length ? 12000 : 5200);
       if ($('#dumps').style.display !== 'none') renderDumps();
     } else {
       const r = await api('/api/dump/start', {method:'POST',
         headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({filtered: $('#onlyproc').checked && !!state.selected})})
+        body: JSON.stringify({filtered: $('#onlyproc').checked && !!state.selected, ...dumpOptions()})})
         || {ok:false, error:t('no connection to SocketTrail')};
       toast(r.ok ? t('Recording to {p}', {p: `<span class="mono">${esc(r.path)}</span>`})
           + (r.only ? `<br><span class="dim">${t('only {w} and its child processes, recording stops by itself after it exits', {w: esc(r.only)})}</span>` : '')
@@ -1042,20 +1616,22 @@ $('#btn-dump').onclick = async () => {
 };
 
 $('#btn-copy').onclick = () => {
+  const list = state.view === 'list';
   const head = LANG === 'ru'
-    ? (state.view === 'agg'
-      ? ['время','активных','домен','адрес','порт','протокол','сеть','сессий','исх','вх']
-      : ['время','состояние','домен','адрес','порт','протокол','сеть','процесс','pid','исх','вх'])
-    : (state.view === 'agg'
-      ? ['time','active','domain','address','port','protocol','network','sessions','out','in']
-      : ['time','state','domain','address','port','protocol','network','process','pid','out','in']);
+    ? (list
+      ? ['время','состояние','домен','адрес','порт','протокол','сеть','процесс','pid','исх','вх']
+      : ['время','активных','имя','адрес','порт','протокол','сеть','сессий','исх','вх'])
+    : (list
+      ? ['time','state','domain','address','port','protocol','network','process','pid','out','in']
+      : ['time','active','name','address','port','protocol','network','sessions','out','in']);
   const lines = [head.join('\t')];
   for (const it of state.lastRows){
-    lines.push(state.view === 'agg'
-      ? [fmtTime(it.first_seen), it.live, it.domain || '', it.remote, it.rport, it.proto,
-         `${it.asn || ''} ${it.owner || ''}`.trim(), it.sessions, it.tx_bytes, it.rx_bytes].join('\t')
-      : [fmtTime(it.first_seen), it.state, it.domain || '', it.remote, it.rport, it.proto,
-         `${it.asn || ''} ${it.owner || ''}`.trim(), it.pname || '', it.pid ?? '', it.tx_bytes, it.rx_bytes].join('\t'));
+    lines.push(list
+      ? [fmtTime(it.first_seen), it.state, it.domain || '', it.remote, it.rport, it.proto,
+         `${it.asn || ''} ${it.owner || ''}`.trim(), it.pname || '', it.pid ?? '', it.tx_bytes, it.rx_bytes].join('\t')
+      : [fmtTime(it.first_seen), it.live, (state.view === 'address' ? it.domain : it.label) || '',
+         it.remote ?? it.addresses, it.rport ?? it.ports, it.proto,
+         `${it.asn || ''} ${it.owner || ''}`.trim(), it.sessions, it.tx_bytes, it.rx_bytes].join('\t'));
   }
   copy(lines.join('\n'), plural(state.lastRows.length, ['row', 'rows'], ['строка', 'строки', 'строк']));
 };
@@ -1069,12 +1645,86 @@ function hideDumps(){
   $('#dumps').style.display = 'none';
   $('#btn-folder').classList.remove('on');
 }
+// Панель показывает состояние каждого файла и то, что еще можно с ним сделать.
+let openSummary = null;
+let dumpFiles = [];
+const STATUS_TEXT = {filtered: 'only the process', unfiltered: 'not filtered', host: 'all traffic', unknown: 'no details'};
+
+function dumpRow(f, job){
+  const tags = [`<span class="tag s-${f.status}">${t(STATUS_TEXT[f.status] || 'no details')}</span>`];
+  if (f.compact) tags.push(`<span class="tag t-plain">${t('compact')}</span>`);
+  if (f.parts) tags.push(`<span class="tag t-plain">${t('parts: {n}', {n: f.parts})}</span>`);
+  if (f.warnings) tags.push(`<span class="tag s-unfiltered">${t('with losses')}</span>`);
+  if (f.failed) tags.push(`<span class="tag s-unfiltered">${t('failed')}</span>`);
+  const act = (a, label, title, cls) =>
+    `<button data-act="${a}" data-name="${esc(f.name)}" title="${t(title || label)}"${cls ? ` class="${cls}"` : ''}${job ? ' disabled' : ''}>${t(label)}</button>`;
+  let acts = '';
+  if (f.recording) acts = `<span class="dim">${t('recording')}</span>`;
+  else if (job === f.name) acts = `<span class="dim" id="job-state">${t('processing')}</span>`;
+  else {
+    if (f.can_filter) acts += act('filter', 'Filter', 'Keep only the connections of the recorded process', 'primary');
+    if (!f.compact) acts += act('compact', 'Compact', 'Reduce the file: headers and the start of each flow stay');
+    if (!f.parts) acts += act('split', 'Split', 'One file per domain or subnet in a folder next to the dump');
+    if (f.summary) acts += act('summary', 'Summary');
+    if (f.parts) acts += act('open', 'Open parts');
+  }
+  const row = `<tr><td class="f" title="${esc(f.name)}">${esc(f.name)}</td><td>${fmtBytes(f.size)}</td>`
+    + `<td>${new Date(f.mtime).toLocaleString(loc())}</td><td class="tags">${tags.join('')}</td><td class="acts">${acts}</td></tr>`;
+  return openSummary === f.name
+    ? row + `<tr><td colspan="5"><div class="sumbox" id="sumbox"></div></td></tr>` : row;
+}
+
+function summaryHtml(s){
+  const p = s.packets;
+  const head = [];
+  if (s.process && s.process.name) head.push(`<b>${esc(s.process.name)}</b>`);
+  if (s.captured_from) head.push(`${esc(s.captured_from)} – ${esc(s.captured_until || '')}`);
+  if (p){
+    head.push(t('{k} of {n} packets kept', {k: fmtNum(p.kept), n: fmtNum(p.total)}));
+    if (p.bytes) head.push(t('data {a}, in the file {b}', {a: fmtBytes(p.bytes), b: fmtBytes(p.stored)}));
+  }
+  const warnings = (s.processing && s.processing.warnings) || [];
+  const lines = (title, rows) => rows.length
+    ? `<div><h4>${t(title)}</h4>${rows.join('')}</div>` : '';
+  const line = (name, value) =>
+    `<div class="sumline"><span class="mono" title="${esc(name)}">${esc(name)}</span><span>${value}</span></div>`;
+  const parts = (s.parts && s.parts.files) || [];
+  return `<div class="sumhead">${head.join(' · ')}</div>`
+    + (warnings.length ? `<div class="sumwarn">${warnings.map(esc).join('<br>')}</div>` : '')
+    + '<div class="sumgrid">'
+    + lines('Domains', (s.domains || []).slice(0, 15).map(d => line(d.domain, fmtBytes(d.bytes))))
+    + lines('Subnets', (s.subnets || []).slice(0, 15).map(d => line(d.subnet, fmtBytes(d.bytes))))
+    + lines('Parts', [...parts].sort((a, b) => b.stored - a.stored).slice(0, 15).map(f => line(f.file, fmtBytes(f.stored))))
+    + '</div>';
+}
+
+async function fillSummary(name){
+  const box = $('#sumbox');
+  if (!box) return;
+  const r = await api('/api/dumps/summary?name=' + encodeURIComponent(name));
+  const now = $('#sumbox');
+  if (!now || openSummary !== name) return;
+  now.innerHTML = r && r.ok ? summaryHtml(r.summary) : esc((r && r.error) || '');
+}
+
+async function processDump(name, body){
+  const r = await api('/api/dumps/process', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({name, ...body})});
+  if (r && r.ok){
+    toast(t('Done: {p}', {p: `<span class="mono">${esc(name)}</span>`}) + `<br>${fmtBytes(r.size)}`
+      + (r.parts ? ', ' + t('parts: {n}', {n: r.parts}) : '') + warningsHtml(r.warnings));
+  } else {
+    toast(t('Processing failed: {e}', {e: esc((r && r.error) || t('no connection to SocketTrail'))}), 'bad', 12000);
+  }
+  renderDumps();
+}
+
 async function renderDumps(){
   const box = $('#dumps');
   const r = await api('/api/dumps');
   if (!r) return;
-  const rows = r.files.map(f => `<tr><td class="f">${esc(f.name)}</td><td>${fmtBytes(f.size)}</td>`
-    + `<td>${new Date(f.mtime).toLocaleString(loc())}</td></tr>`).join('');
+  dumpFiles = r.files;
+  const rows = r.files.map(f => dumpRow(f, r.job)).join('');
   box.innerHTML = `<div class="path">${t('Dumps are saved to {d}', {d: `<code>${esc(r.dir)}</code>`})}`
     + `<button id="btn-reveal">${ic('folder')}${t('Open folder')}</button>`
     + `<button id="btn-copydir">${ic('copy')}${t('Copy path')}</button>`
@@ -1090,10 +1740,33 @@ async function renderDumps(){
   };
   $('#btn-copydir').onclick = () => copy(r.dir, r.dir);
   $('#btn-hide').onclick = hideDumps;
+  if (openSummary) fillSummary(openSummary);
 }
 
-const exportUrl = format => `/api/export?format=${format}&scope=${state.scope}`
-  + `&q=${encodeURIComponent($('#qc').value)}&proto=${state.proto}`;
+$('#dumps').addEventListener('click', async e => {
+  const b = e.target.closest('[data-act]');
+  if (!b) return;
+  const name = b.dataset.name, act = b.dataset.act;
+  if (act === 'summary'){
+    openSummary = openSummary === name ? null : name;
+    renderDumps();
+  } else if (act === 'open'){
+    const res = await api('/api/reveal?name=' + encodeURIComponent(name), {method:'POST'});
+    if (res && !res.ok) toast(t('Could not open the folder, path: {d}', {d: esc(res.dir)}), 'bad');
+  } else {
+    const f = dumpFiles.find(x => x.name === name) || {};
+    const opts = dumpOptions();
+    const body = act === 'filter' ? {...opts, filter: true}
+      : act === 'compact' ? {compact: true, split: f.parts ? 'always' : opts.split}
+      : {compact: !!f.compact, split: 'always'};
+    // Панель сразу показывает, что файл занят: большой дамп обрабатывается не мгновенно.
+    const started = processDump(name, body);
+    setTimeout(renderDumps, 150);
+    await started;
+  }
+});
+
+const exportUrl = format => `/api/export?format=${format}&${tableParams()}`;
 $('#btn-export').onclick = () => location.href = exportUrl('json');
 $('#btn-html').onclick = () => location.href = exportUrl('html');
 $('#btn-clear').onclick = async () => { await api('/api/clear', {method:'POST'}); hardRefresh(); };
@@ -1106,19 +1779,31 @@ document.querySelectorAll('#lang button').forEach(b => b.onclick = async () => {
   LANG = r.lang;
   applyLang();
   // кеши разметки сравнивают готовый HTML: после смены языка их надо сбросить
-  $('#btn-dump')._html = ''; $('#warn')._html = '';
+  $('#btn-dump')._html = ''; $('#warn')._html = ''; $('#btn-mode')._html = '';
   renderDumpBtn(state.dump);
   renderProcs();
+  renderHeads();
+  renderChips();
+  renderPause();
+  renderProcSort();
+  closePops();
   if ($('#dumps').style.display !== 'none') renderDumps();
   hardRefresh();
 });
 
+state.limit = +saved.get('limit', 200) || 200;
+$('#pg-size').value = String(state.limit);
+state.procSort = saved.get('procSort', 'name') === 'conns' ? 'conns' : 'name';
 renderDumpBtn(null);
 loadWidths();
 initResizers();
 initAsideGrip();
 collectStatics();
 applyLang();
+renderHeads();
+renderChips();
+renderPause();
+renderProcSort();
 loadProcs();
 refresh();
 // Открытый канал - признак живого окна: по его закрытию сервер завершается.

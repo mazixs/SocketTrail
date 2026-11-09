@@ -36,6 +36,11 @@ pub async fn start_live(_iface: &str, tx: PacketSender) -> Result<Live, Text> {
     crate::etw::start(tx).map(|session| Live { _session: session })
 }
 
+/// События, потерянные самой ETW-сессией: их не видно ни в очереди, ни в файле.
+pub fn system_lost() -> u64 {
+    crate::etw::events_lost()
+}
+
 #[derive(Default)]
 pub struct Dump {
     recording: bool,

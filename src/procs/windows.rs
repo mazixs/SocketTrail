@@ -39,6 +39,10 @@ impl Scanner {
     }
 
     pub fn refresh_pids(&mut self, pids: &[i32]) -> Vec<ProcInfo> {
+        // Снимок всех процессов четыре раза в секунду нужен только ради выбранной группы.
+        if pids.is_empty() {
+            return Vec::new();
+        }
         self.refresh_list(
             toolhelp()
                 .into_iter()

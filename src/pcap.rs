@@ -4,6 +4,7 @@
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
+use crate::sockets::Proto;
 use crate::{quic, tls};
 
 pub struct Parsers {
@@ -18,7 +19,6 @@ impl Default for Parsers {
         }
     }
 }
-use crate::sockets::Proto;
 
 #[derive(Debug, Clone)]
 pub struct Packet {
@@ -119,30 +119,46 @@ impl PcapngReader {
     }
 }
 
-/// Разбор одного кадра без состояния: SNI из QUIC тут не собрать.
-pub fn parse_link(linktype: u16, d: &[u8]) -> Option<Packet> {
-    parse_link_with(linktype, d, None)
+/// Кортеж и границы слоев одного кадра. Этого хватает для отбора и сокращения дампа:
+/// содержимое пакета разбирать незачем.
+#[derive(Debug, Clone)]
+pub struct Flow {
+    pub proto: Proto,
+    pub src: IpAddr,
+    pub sport: u16,
+    pub dst: IpAddr,
+    pub dport: u16,
+    /// Размер IP-пакета по заголовку, даже если кадр обрезан при захвате.
+    pub bytes: u32,
+    /// Смещение транспортного заголовка от начала кадра.
+    pub l4: usize,
+    /// Полезная нагрузка транспортного уровня.
+    pub payload: std::ops::Range<usize>,
 }
 
-/// Снятие канального заголовка. dumpcap -i any отдает LINUX_SLL или SLL2.
-pub fn parse_link_with(
-    linktype: u16,
-    d: &[u8],
-    quic: Option<&mut quic::Assembler>,
-) -> Option<Packet> {
-    parse_link_state(linktype, d, quic, None)
+impl Flow {
+    pub fn is_dns(&self) -> bool {
+        matches!(self.sport, 53 | 5353) || matches!(self.dport, 53 | 5353)
+    }
+}
+
+/// Разбор одного кадра без состояния: SNI из QUIC тут не собрать.
+#[cfg(test)]
+pub fn parse_link(linktype: u16, d: &[u8]) -> Option<Packet> {
+    parse_link_state(linktype, d, None, None)
+}
+
+#[cfg(test)]
+pub fn parse_link_with_quic(linktype: u16, d: &[u8], quic: &mut quic::Assembler) -> Option<Packet> {
+    parse_link_state(linktype, d, Some(quic), None)
 }
 
 pub fn parse_link_live(linktype: u16, d: &[u8], parsers: &mut Parsers) -> Option<Packet> {
     parse_link_state(linktype, d, Some(&mut parsers.quic), Some(&mut parsers.tcp))
 }
 
-fn parse_link_state(
-    linktype: u16,
-    d: &[u8],
-    quic: Option<&mut quic::Assembler>,
-    tcp: Option<&mut tls::Assembler>,
-) -> Option<Packet> {
+/// Снятие канального заголовка. dumpcap -i any отдает LINUX_SLL или SLL2.
+pub fn parse_flow(linktype: u16, d: &[u8]) -> Option<Flow> {
     let (mut ethertype, mut off) = match linktype {
         1 => (be16(d, 12)?, 14),   // Ethernet
         113 => (be16(d, 14)?, 16), // LINUX_SLL
@@ -161,18 +177,25 @@ fn parse_link_state(
         ethertype = be16(d, off + 2)?;
         off += 4;
     }
-    match ethertype {
-        0x0800 => parse_ipv4(d.get(off..)?, quic, tcp),
-        0x86DD => parse_ipv6(d.get(off..)?, quic, tcp),
-        _ => None,
-    }
+    let ip = match ethertype {
+        0x0800 => ipv4_layer(d, off)?,
+        0x86DD => ipv6_layer(d, off)?,
+        _ => return None,
+    };
+    transport(d, &ip)
 }
 
-fn parse_ipv4(
-    d: &[u8],
-    quic: Option<&mut quic::Assembler>,
-    tcp: Option<&mut tls::Assembler>,
-) -> Option<Packet> {
+struct IpLayer {
+    proto: u8,
+    src: IpAddr,
+    dst: IpAddr,
+    bytes: u32,
+    l4: usize,
+    end: usize,
+}
+
+fn ipv4_layer(frame: &[u8], at: usize) -> Option<IpLayer> {
+    let d = frame.get(at..)?;
     if d.first()? >> 4 != 4 || be16(d, 6)? & 0x1fff != 0 {
         return None;
     }
@@ -180,34 +203,39 @@ fn parse_ipv4(
     if ihl < 20 || d.len() < ihl {
         return None;
     }
-    let total = be16(d, 2)? as u32;
-    if total < ihl as u32 {
+    // Ноль в длине - большой пакет до аппаратной нарезки (TSO), длину дает сам кадр.
+    let total = match be16(d, 2)? as usize {
+        0 => d.len(),
+        n => n,
+    };
+    if total < ihl {
         return None;
     }
-    let d = &d[..d.len().min(total as usize)];
-    let proto = *d.get(9)?;
-    let src = IpAddr::V4(Ipv4Addr::new(d[12], d[13], d[14], d[15]));
-    let dst = IpAddr::V4(Ipv4Addr::new(d[16], d[17], d[18], d[19]));
-    parse_l4(proto, src, dst, total, d.get(ihl..)?, quic, tcp)
+    Some(IpLayer {
+        proto: *d.get(9)?,
+        src: IpAddr::V4(Ipv4Addr::new(d[12], d[13], d[14], d[15])),
+        dst: IpAddr::V4(Ipv4Addr::new(d[16], d[17], d[18], d[19])),
+        bytes: total as u32,
+        l4: at + ihl,
+        end: at + d.len().min(total),
+    })
 }
 
-fn parse_ipv6(
-    d: &[u8],
-    quic: Option<&mut quic::Assembler>,
-    tcp: Option<&mut tls::Assembler>,
-) -> Option<Packet> {
+fn ipv6_layer(frame: &[u8], at: usize) -> Option<IpLayer> {
+    let d = frame.get(at..)?;
     if d.len() < 40 || d[0] >> 4 != 6 {
         return None;
     }
-    let payload_len = be16(d, 4)? as u32;
+    let payload_len = match be16(d, 4)? as usize {
+        0 => d.len() - 40,
+        n => n,
+    };
     let mut next = *d.get(6)?;
-    let d = &d[..d.len().min(40 + payload_len as usize)];
+    let d = &d[..d.len().min(40 + payload_len)];
     let mut s = [0u8; 16];
     let mut t = [0u8; 16];
     s.copy_from_slice(&d[8..24]);
     t.copy_from_slice(&d[24..40]);
-    let src = IpAddr::V6(Ipv6Addr::from(s));
-    let dst = IpAddr::V6(Ipv6Addr::from(t));
     let mut off = 40;
     for _ in 0..8 {
         let size = match next {
@@ -219,7 +247,16 @@ fn parse_ipv6(
                 }
                 8
             }
-            6 | 17 => return parse_l4(next, src, dst, payload_len + 40, d.get(off..)?, quic, tcp),
+            6 | 17 => {
+                return Some(IpLayer {
+                    proto: next,
+                    src: IpAddr::V6(Ipv6Addr::from(s)),
+                    dst: IpAddr::V6(Ipv6Addr::from(t)),
+                    bytes: payload_len as u32 + 40,
+                    l4: at + off,
+                    end: at + d.len(),
+                });
+            }
             _ => return None,
         };
         next = *d.get(off)?;
@@ -231,72 +268,76 @@ fn parse_ipv6(
     None
 }
 
-fn parse_l4(
-    proto: u8,
-    src: IpAddr,
-    dst: IpAddr,
-    bytes: u32,
-    d: &[u8],
-    quic: Option<&mut quic::Assembler>,
-    tcp: Option<&mut tls::Assembler>,
-) -> Option<Packet> {
-    let (p, sport, dport, payload) = match proto {
+fn transport(frame: &[u8], ip: &IpLayer) -> Option<Flow> {
+    let d = frame.get(ip.l4..ip.end)?;
+    let (proto, payload) = match ip.proto {
         6 => {
             let off = ((*d.get(12)? >> 4) as usize) * 4;
             if off < 20 || d.len() < off {
                 return None;
             }
-            (
-                Proto::Tcp,
-                be16(d, 0)?,
-                be16(d, 2)?,
-                d.get(off..).unwrap_or(&[]),
-            )
+            (Proto::Tcp, off..d.len())
         }
         17 => {
-            if be16(d, 4)? < 8 || d.len() < 8 {
+            let len = be16(d, 4)? as usize;
+            if len < 8 || d.len() < 8 {
                 return None;
             }
-            (
-                Proto::Udp,
-                be16(d, 0)?,
-                be16(d, 2)?,
-                &d[8..(be16(d, 4)? as usize).min(d.len())],
-            )
+            (Proto::Udp, 8..len.min(d.len()))
         }
         _ => return None,
     };
+    Some(Flow {
+        proto,
+        src: ip.src,
+        sport: be16(d, 0)?,
+        dst: ip.dst,
+        dport: be16(d, 2)?,
+        bytes: ip.bytes,
+        l4: ip.l4,
+        payload: ip.l4 + payload.start..ip.l4 + payload.end,
+    })
+}
 
+fn parse_link_state(
+    linktype: u16,
+    d: &[u8],
+    quic: Option<&mut quic::Assembler>,
+    tcp: Option<&mut tls::Assembler>,
+) -> Option<Packet> {
+    let f = parse_flow(linktype, d)?;
+    let payload = &d[f.payload.clone()];
     let mut pkt = Packet {
-        proto: p,
-        src,
-        sport,
-        dst,
-        dport,
-        bytes,
+        proto: f.proto,
+        src: f.src,
+        sport: f.sport,
+        dst: f.dst,
+        dport: f.dport,
+        bytes: f.bytes,
         sni: None,
         dns_addrs: Vec::new(),
     };
 
-    if p == Proto::Tcp {
+    if f.proto == Proto::Tcp {
         pkt.sni = if let Some(tcp) = tcp {
-            let seq = u32::from_be_bytes(d.get(4..8)?.try_into().ok()?);
-            tcp.feed((src, sport, dst, dport), seq, *d.get(13)?, payload)
+            let l4 = &d[f.l4..];
+            let seq = u32::from_be_bytes(l4.get(4..8)?.try_into().ok()?);
+            tcp.feed((f.src, f.sport, f.dst, f.dport), seq, *l4.get(13)?, payload)
         } else {
             parse_sni(payload)
         };
     }
-    if p == Proto::Udp
+    if f.proto == Proto::Udp
         && payload.first().is_some_and(|b| b & 0x80 != 0)
         && let Some(q) = quic
     {
-        pkt.sni = q.feed(src, sport, payload);
+        pkt.sni = q.feed(f.src, f.sport, payload);
     }
-    if sport == 53 || dport == 53 || sport == 5353 || dport == 5353 {
+    if f.is_dns() {
         // По TCP перед сообщением идут 2 байта его длины (RFC 1035 4.2.2).
         // Сообщение, разбитое на несколько сегментов, не собираем: без
         // сборки потока продолжение разобралось бы со сдвигом.
-        let msg = if p == Proto::Tcp {
+        let msg = if f.proto == Proto::Tcp {
             payload
                 .get(2..)
                 .filter(|m| be16(payload, 0).is_some_and(|n| n as usize == m.len()))

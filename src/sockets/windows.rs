@@ -17,13 +17,16 @@ use windows_sys::Win32::NetworkManagement::IpHelper::{
 };
 use windows_sys::Win32::Networking::WinSock::{AF_INET, AF_INET6, AF_UNSPEC};
 
-use super::{Proto, SockEntry, udp_state};
+use super::{Proto, STATE_OPEN, SockEntry, udp_state};
+
+const LISTEN: u32 = 2;
+const STATE_LISTEN: &str = "LISTEN";
 
 /// MIB_TCP_STATE.
 fn tcp_state(code: u32) -> &'static str {
     match code {
-        1 => "CLOSE",
-        2 => "LISTEN",
+        1 => "CLOSED",
+        2 => STATE_LISTEN,
         3 => "SYN_SENT",
         4 => "SYN_RECV",
         5 => "ESTABLISHED",
@@ -35,6 +38,35 @@ fn tcp_state(code: u32) -> &'static str {
         11 => "TIME_WAIT",
         12 => "DELETE_TCB",
         _ => "UNKNOWN",
+    }
+}
+
+/// На некоторых системах поле состояния в таблице TCP смещено относительно строк: вместо
+/// него читаются соседние служебные значения (LISTEN, CLOSED, 0, FIN_WAIT1), и они меняются
+/// у десятков строк разом. netstat показывает то же самое, адрес и PID при этом верны.
+/// Смещение видно по самой таблице: слушающий сокет с другим состоянием или соединение
+/// с адресом, которое якобы слушает. Без такого признака таблице верим как есть.
+fn state_field_is_shifted(mut rows: impl Iterator<Item = (u32, bool)>) -> bool {
+    rows.any(|(code, connected)| {
+        if connected {
+            code == 0 || code == LISTEN
+        } else {
+            code != LISTEN
+        }
+    })
+}
+
+/// Состояние строки с учетом смещения. Настоящее значение отличается от служебных, поэтому
+/// ему верим и тут. Строка без владельца остается только после закрытия: это TIME_WAIT.
+fn connection_state(code: u32, pid: u32, shifted: bool) -> &'static str {
+    if !shifted {
+        tcp_state(code)
+    } else if pid == 0 {
+        "TIME_WAIT"
+    } else if matches!(code, 0 | 1 | LISTEN | 6) {
+        STATE_OPEN
+    } else {
+        tcp_state(code)
     }
 }
 
@@ -128,32 +160,38 @@ fn udp(af: u16, class: i32) -> Option<Vec<u64>> {
     fetch(|p, s| unsafe { GetExtendedUdpTable(p, s, 0, af as u32, class, 0) })
 }
 
-pub fn snapshot(_scan_pids: &[i32]) -> Vec<SockEntry> {
+/// None - таблицу прочитать не удалось. Пустой снимок в этом случае закрыл бы все
+/// соединения разом, и при следующем чтении они выглядели бы повторно занятыми.
+/// Таблицы IPv6 необязательны: стека IPv6 в системе может не быть.
+pub fn snapshot(_scan_pids: &[i32]) -> Option<Vec<SockEntry>> {
     let mut out = Vec::with_capacity(512);
-    if let Some(b) = tcp(AF_INET) {
-        for r in rows::<MIB_TCPROW_OWNER_PID>(&b) {
-            out.push(SockEntry {
-                proto: Proto::Tcp,
-                local: v4(r.dwLocalAddr),
-                lport: port(r.dwLocalPort),
-                remote: v4(r.dwRemoteAddr),
-                rport: port(r.dwRemotePort),
-                state: tcp_state(r.dwState),
-                pid: owner(r.dwOwningPid),
-                ambiguous: false,
-                cookie: None,
-            });
-        }
+    let table = rows::<MIB_TCPROW_OWNER_PID>(&tcp(AF_INET)?);
+    let shifted = state_field_is_shifted(table.iter().map(|r| (r.dwState, r.dwRemoteAddr != 0)));
+    for r in table {
+        out.push(SockEntry {
+            proto: Proto::Tcp,
+            local: v4(r.dwLocalAddr),
+            lport: port(r.dwLocalPort),
+            remote: v4(r.dwRemoteAddr),
+            rport: port(r.dwRemotePort),
+            state: connection_state(r.dwState, r.dwOwningPid, shifted),
+            pid: owner(r.dwOwningPid),
+            ambiguous: false,
+            cookie: None,
+        });
     }
     if let Some(b) = tcp(AF_INET6) {
-        for r in rows::<MIB_TCP6ROW_OWNER_PID>(&b) {
+        let table = rows::<MIB_TCP6ROW_OWNER_PID>(&b);
+        let shifted =
+            state_field_is_shifted(table.iter().map(|r| (r.dwState, r.ucRemoteAddr != [0; 16])));
+        for r in table {
             out.push(SockEntry {
                 proto: Proto::Tcp,
                 local: v6(r.ucLocalAddr),
                 lport: port(r.dwLocalPort),
                 remote: v6(r.ucRemoteAddr),
                 rport: port(r.dwRemotePort),
-                state: tcp_state(r.dwState),
+                state: connection_state(r.dwState, r.dwOwningPid, shifted),
                 pid: owner(r.dwOwningPid),
                 ambiguous: false,
                 cookie: None,
@@ -176,8 +214,8 @@ pub fn snapshot(_scan_pids: &[i32]) -> Vec<SockEntry> {
                 cookie: (r.liCreateTimestamp != 0).then_some(r.liCreateTimestamp as u64),
             });
         }
-    } else if let Some(b) = udp(AF_INET, UDP_TABLE_OWNER_PID) {
-        for r in rows::<MIB_UDPROW_OWNER_PID>(&b) {
+    } else {
+        for r in rows::<MIB_UDPROW_OWNER_PID>(&udp(AF_INET, UDP_TABLE_OWNER_PID)?) {
             out.push(SockEntry {
                 proto: Proto::Udp,
                 local: v4(r.dwLocalAddr),
@@ -220,7 +258,7 @@ pub fn snapshot(_scan_pids: &[i32]) -> Vec<SockEntry> {
             });
         }
     }
-    out
+    Some(out)
 }
 
 #[cfg(test)]
@@ -240,11 +278,40 @@ mod tests {
         let udp = UdpSocket::bind("127.0.0.1:0").unwrap();
         let addr = udp.local_addr().unwrap();
         let pid = std::process::id() as i32;
-        let socks = snapshot(&[]);
+        let socks = snapshot(&[]).unwrap();
         assert!(socks.iter().any(|s| s.proto == Proto::Udp
             && s.local == addr.ip()
             && s.lport == addr.port()
             && s.pid == Some(pid)));
+    }
+
+    #[test]
+    fn healthy_table_is_taken_as_it_is() {
+        let rows = [(LISTEN, false), (5, true), (6, true), (1, true), (11, true)];
+        assert!(!state_field_is_shifted(rows.into_iter()));
+        assert_eq!(connection_state(6, 100, false), "FIN_WAIT1");
+        assert_eq!(connection_state(1, 100, false), "CLOSED");
+        assert_eq!(connection_state(5, 0, false), "ESTABLISHED");
+    }
+
+    #[test]
+    fn shifted_table_is_recognized_by_impossible_rows() {
+        assert!(state_field_is_shifted([(5, true), (1, false)].into_iter()));
+        assert!(state_field_is_shifted(
+            [(5, true), (LISTEN, true)].into_iter()
+        ));
+        assert!(state_field_is_shifted([(0, true)].into_iter()));
+    }
+
+    #[test]
+    fn shifted_values_do_not_pass_for_connection_states() {
+        for code in [0, 1, LISTEN, 6] {
+            assert_eq!(connection_state(code, 100, true), STATE_OPEN);
+            assert_eq!(connection_state(code, 0, true), "TIME_WAIT");
+        }
+        assert_eq!(connection_state(5, 100, true), "ESTABLISHED");
+        assert_eq!(connection_state(8, 100, true), "CLOSE_WAIT");
+        assert_eq!(connection_state(3, 100, true), "SYN_SENT");
     }
 
     #[test]
@@ -268,12 +335,12 @@ mod tests {
         a.set_nonblocking(true).unwrap();
         let _ = a.read(&mut [0u8; 1]);
         let me = std::process::id() as i32;
-        let s = snapshot(&[]);
+        let s = snapshot(&[]).unwrap();
         assert!(
             s.iter().any(|e| e.proto == Proto::Tcp
                 && e.lport == cp
                 && e.rport == lp
-                && e.state == "ESTABLISHED"
+                && (e.state == "ESTABLISHED" || e.state == STATE_OPEN)
                 && e.pid == Some(me)),
             "соединение {cp}->{lp} с PID {me} не найдено среди {} сокетов",
             s.len()

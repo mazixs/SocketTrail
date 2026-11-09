@@ -24,17 +24,29 @@ The "Restart as administrator" button in the window (or starting the exe with
 Windows. This gives browser domains (SNI), per-connection traffic volume and
 .pcapng dumps. Wireshark and Npcap are not needed.
 Requires Windows 10 version 2004 or newer, or Windows 11.
+Run as administrator for analysis and dumps. Without it the program suits a quick
+look at which programs hold connections. The badge in the window header shows
+the mode: Full mode or Basic mode.
 
 Dumps
 -----
 "Record dump" with "process only" checked records the traffic of the selected
 game and stops by itself 15 seconds after the game exits. Every packet in the
 file is labeled with its process and domain: in Wireshark this is the
-frame.comment field, filter frame.comment contains "game.exe". A .json file
-with the connection map is saved next to it. Unknown or disputed connection
-owners are excluded from process-only dumps. Recording controls remain disabled
-during finalization. Capture or processing failures show an error; if filtering
-fails, the original whole-host file is preserved and identified as unfiltered.
+frame.comment field, filter frame.comment contains "game.exe". A .json summary
+and a .connections.jsonl connection list are saved next to it. Unknown or
+disputed connection owners are excluded from process-only dumps. Recording
+controls remain disabled during finalization.
+
+By default the file is compacted: the start of each flow and all DNS stay whole,
+later packets keep their headers. A file over 64 MiB is also split into parts by
+domain and subnet. The arrow next to "process only" changes both settings.
+The "Dumps" button lists the files with their status and can filter, compact and
+split a recorded file, including dumps of earlier versions.
+
+Losses during capture become warnings and do not cancel filtering. If the file
+cannot be rewritten, the original whole-host file is preserved and identified as
+unfiltered.
 
 Only the built-in PktMon/ETW engine is used. Wireshark, Npcap and dumpcap are
 never started. Packet capture and dumps require administrator rights.
@@ -79,17 +91,28 @@ SocketTrail для Windows
 драйвером PktMon. Это дает домены браузеров (SNI), объем трафика по соединениям
 и запись дампов .pcapng. Ставить Wireshark и Npcap не нужно.
 Нужна Windows 10 версии 2004 или новее либо Windows 11.
+Для анализа и дампов запускайте от администратора. Без этого программа годится
+для беглого просмотра того, какие программы держат соединения. Метка в шапке
+окна показывает режим: Полный режим или Базовый режим.
 
 Дампы
 -----
 "Собрать дамп" с галочкой "только процесс" пишет трафик выбранной игры и
 останавливается сам через 15 секунд после ее выхода. Каждый пакет в файле
 подписан процессом и доменом: в Wireshark это поле frame.comment, фильтр
-frame.comment contains "game.exe". Рядом лежит .json с картой соединений.
-Соединения с неизвестным или спорным владельцем исключаются из дампа процесса.
-Кнопка записи недоступна до завершения обработки. Ошибки захвата и обработки
-показываются в интерфейсе; при сбое фильтрации исходный файл всего компьютера
-сохраняется и явно отмечается как нефильтрованный.
+frame.comment contains "game.exe". Рядом лежат сводка .json и список соединений
+.connections.jsonl. Соединения с неизвестным или спорным владельцем исключаются
+из дампа процесса. Кнопка записи недоступна до завершения обработки.
+
+По умолчанию файл сокращается: начало каждого потока и весь DNS остаются целиком,
+у остальных пакетов остаются заголовки. Файл больше 64 МиБ еще и разбивается на
+части по доменам и подсетям. Обе настройки меняются стрелкой рядом с "только
+процесс". Кнопка "Дампы" показывает файлы с их состоянием и умеет отфильтровать,
+сократить и разбить записанный файл, в том числе дамп прежней версии.
+
+Потери при захвате становятся предупреждениями и не отменяют отбор. Если файл не
+удалось переписать, исходный файл всего компьютера сохраняется и явно отмечается
+как нефильтрованный.
 
 Используется только собственный движок PktMon/ETW. Wireshark, Npcap и dumpcap
 не запускаются. Захват пакетов и запись дампов требуют прав администратора.

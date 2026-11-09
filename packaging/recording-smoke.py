@@ -183,6 +183,53 @@ def recording_checks(app):
     print('ok: live capture exit updates status and prevents recording')
 
 
+def dump_panel_checks(app):
+    files = app.request('/api/dumps')['files']
+    host = next(f for f in files if f['status'] == 'host')
+    assert host['format'] == 2 and host['summary'] and not host['can_filter']
+    summary = app.request('/api/dumps/summary?name=' + host['name'])
+    assert summary['ok'] and summary['summary']['subnets'], summary
+
+    done = app.request('/api/dumps/process', {'name': host['name'], 'compact': True, 'split': 'always'})
+    assert done['ok'] and done['parts'] >= 1, done
+    row = next(f for f in app.request('/api/dumps')['files'] if f['name'] == host['name'])
+    assert row['compact'] and row['parts'] == done['parts']
+    parts = app.root / 'SocketTrail' / Path(host['name']).with_suffix('.parts')
+    assert len(list(parts.glob('*.pcapng'))) == done['parts']
+    assert app.request('/api/dumps/process', {'name': host['name'], 'split': 'never'})['ok']
+    assert not parts.exists()
+    print('ok: a recorded dump can be compacted, split and joined back')
+
+    wrong = next(f for f in files if f['status'] == 'unfiltered')
+    before = (app.root / 'SocketTrail' / wrong['name']).read_bytes()
+    Path(str(app.root / 'SocketTrail' / wrong['name']) + '.part').rmdir()
+    refused = app.request('/api/dumps/process', {'name': wrong['name'], 'filter': True})
+    assert not refused['ok'] and refused['error'], refused
+    assert (app.root / 'SocketTrail' / wrong['name']).read_bytes() == before
+    print('ok: filtering without a process map leaves the file as it was')
+
+    kept = app.request('/api/dumps/process', {'name': wrong['name'], 'compact': True})
+    assert kept['ok'], kept
+    row = next(f for f in app.request('/api/dumps')['files'] if f['name'] == wrong['name'])
+    assert row['status'] == 'unfiltered' and row['can_filter'] and row['compact'], row
+    print('ok: compacting an unfiltered dump keeps its traffic and the filter button')
+
+    for name in ('../secret.pcapng', 'demo.json', ''):
+        assert not app.request('/api/dumps/process', {'name': name})['ok']
+    assert not app.request('/api/dumps/summary?name=..%2Fsecret.pcapng')['ok']
+    print('ok: dump names cannot leave the dump folder')
+
+
+def table_checks(app):
+    state = app.request('/api/state?view=domain&sort=dom&dir=asc&page=99&limit=5&filters=%7B%22port%22%3A%5B%22443%22%5D%7D')
+    assert state['page']['limit'] == 5 and state['page']['page'] == 0
+    assert isinstance(state['targets'], list) and isinstance(state['conns'], list)
+    assert 'capture_how' in state['stats'] and 'elevate' in state['stats']
+    facets = app.request('/api/facets?column=state')
+    assert isinstance(facets['values'], list) and not facets['truncated']
+    print('ok: table pages, views, filters and value lists respond')
+
+
 def main():
     binary = Path(sys.argv[1] if len(sys.argv) > 1 else 'target/release/sockettrail').resolve()
     with tempfile.TemporaryDirectory(prefix='sockettrail-recording-smoke-') as tmp:
@@ -192,6 +239,8 @@ def main():
             try:
                 if iface == 'demo':
                     recording_checks(app)
+                    table_checks(app)
+                    dump_panel_checks(app)
                 elif iface == 'invalid':
                     assert not app.request('/api/state')['stats']['capture']
                     assert not app.start()['ok']

@@ -1,0 +1,11 @@
+# The repository is developed on both Linux and Windows. Git for Windows defaults to
+# core.autocrlf=true, which would rewrite shell scripts with CRLF and break them.
+* text=auto eol=lf
+
+# Windows-only scripts must stay CRLF for cmd.exe.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+*.ico binary
+*.png binary
+*.pcapng binary

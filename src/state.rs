@@ -2,12 +2,12 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv6Addr};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::pcap::Packet;
 use crate::procs::ProcInfo;
-use crate::sockets::{Proto, SockEntry};
+use crate::sockets::{Proto, STATE_OPEN, SockEntry};
 
 pub fn now_ms() -> u64 {
     SystemTime::now()
@@ -91,20 +91,26 @@ pub fn classify(ip: &IpAddr) -> &'static str {
 /// Понятная подпись вместо пустого места там, где доменного имени не существует.
 /// Пара (en, ru): при смене языка подпись заменяется в уже известных соединениях.
 pub fn well_known_label(ip: &IpAddr, port: u16) -> Option<(&'static str, &'static str)> {
-    match (ip.to_string().as_str(), port) {
-        ("127.0.0.53", 53) => Some((
-            "systemd-resolved, local DNS",
-            "systemd-resolved, локальный DNS",
-        )),
-        ("127.0.0.54", _) => Some((
-            "systemd-resolved, delegation",
-            "systemd-resolved, делегирование",
-        )),
-        ("127.0.0.1", _) | ("::1", _) => Some(("localhost", "localhost")),
-        ("224.0.0.251", _) => Some(("mDNS, multicast", "mDNS, многоадресная рассылка")),
-        ("239.255.255.250", _) => Some(("SSDP, device discovery", "SSDP, обнаружение устройств")),
-        ("255.255.255.255", _) => Some(("broadcast", "широковещательная рассылка")),
-        _ => None,
+    match ip {
+        IpAddr::V4(v4) => match (v4.octets(), port) {
+            ([127, 0, 0, 53], 53) => Some((
+                "systemd-resolved, local DNS",
+                "systemd-resolved, локальный DNS",
+            )),
+            ([127, 0, 0, 54], _) => Some((
+                "systemd-resolved, delegation",
+                "systemd-resolved, делегирование",
+            )),
+            ([127, 0, 0, 1], _) => Some(("localhost", "localhost")),
+            ([224, 0, 0, 251], _) => Some(("mDNS, multicast", "mDNS, многоадресная рассылка")),
+            ([239, 255, 255, 250], _) => {
+                Some(("SSDP, device discovery", "SSDP, обнаружение устройств"))
+            }
+            ([255, 255, 255, 255], _) => Some(("broadcast", "широковещательная рассылка")),
+            _ => None,
+        },
+        IpAddr::V6(v6) if v6.is_loopback() => Some(("localhost", "localhost")),
+        IpAddr::V6(_) => None,
     }
 }
 
@@ -112,11 +118,11 @@ pub fn well_known_label(ip: &IpAddr, port: u16) -> Option<(&'static str, &'stati
 pub struct Conn {
     pub id: String,
     pub proto: &'static str,
-    pub local: String,
+    pub local: IpAddr,
     pub lport: u16,
-    pub remote: String,
+    pub remote: IpAddr,
     pub rport: u16,
-    pub state: String,
+    pub state: &'static str,
     pub pid: Option<i32>,
     #[serde(skip)]
     pub owner_started: Option<u64>,
@@ -150,23 +156,55 @@ pub struct Conn {
 }
 
 impl Conn {
-    /// Повторно использованный кортеж нельзя подписывать последним владельцем
-    /// при обработке всего дампа. Сомнение сохраняется до конца записи.
-    pub fn update_recording(&mut self, current: &Self) {
-        let same_udp_socket =
-            self.udp_generation.is_some() && self.udp_generation == current.udp_generation;
-        let ambiguous = self.owner_ambiguous
-            || current.owner_ambiguous
-            || (self.first_seen != current.first_seen && !same_udp_socket)
-            || (self.pid.is_some() && self.pid != current.pid)
-            || (self.owner_started.is_some() && self.owner_started != current.owner_started)
-            || (self.udp_generation.is_some() && self.udp_generation != current.udp_generation);
-        *self = current.clone();
-        if ambiguous {
-            self.owner_ambiguous = true;
-            self.pid = None;
-            self.owner_started = None;
-            self.pname = None;
+    /// Сведения для записи дампа: кортеж нельзя подписывать последним владельцем, если
+    /// за время записи им владел другой процесс. Сомнение сохраняется до конца записи,
+    /// а неизвестный пока владелец (история очищена, сокет уже закрыт) его не отменяет.
+    /// Поля копируются на месте: запись обновляет соединения на каждом опросе, а
+    /// `clone_from` переиспользует уже выделенные строки.
+    pub fn update_recording(&mut self, c: &Self) {
+        let disputed = self.owner_ambiguous
+            || c.owner_ambiguous
+            || self.pid.zip(c.pid).is_some_and(|(a, b)| a != b)
+            || self
+                .owner_started
+                .zip(c.owner_started)
+                .is_some_and(|(a, b)| a != b);
+        self.state = c.state;
+        self.domain.clone_from(&c.domain);
+        self.sni.clone_from(&c.sni);
+        self.ptr.clone_from(&c.ptr);
+        self.asn.clone_from(&c.asn);
+        self.owner.clone_from(&c.owner);
+        self.last_seen = c.last_seen;
+        self.tx_bytes = self.tx_bytes.max(c.tx_bytes);
+        self.rx_bytes = self.rx_bytes.max(c.rx_bytes);
+        self.tx_pkts = self.tx_pkts.max(c.tx_pkts);
+        self.rx_pkts = self.rx_pkts.max(c.rx_pkts);
+        self.from_packets_only = c.from_packets_only;
+        self.closed = c.closed;
+        if disputed {
+            self.dispute_owner();
+        } else if c.pid.is_some() {
+            self.pid = c.pid;
+            self.owner_started = c.owner_started.or(self.owner_started);
+            if let Some(name) = &c.pname {
+                self.set_process_name(name);
+            }
+        }
+    }
+
+    /// Доказанно спорный владелец: весь ряд больше нельзя приписать одному процессу.
+    fn dispute_owner(&mut self) {
+        self.owner_ambiguous = true;
+        self.pid = None;
+        self.owner_started = None;
+        self.pname = None;
+    }
+
+    /// Имя процесса обновляется только при смене: опрос идет четыре раза в секунду.
+    fn set_process_name(&mut self, name: &str) {
+        if self.pname.as_deref() != Some(name) {
+            self.pname = Some(name.to_string());
         }
     }
 }
@@ -328,57 +366,36 @@ impl Store {
         self.sockets_at = t;
     }
 
-    fn udp_owner(&self, k: &ConnKey) -> UdpMatch {
-        if !self.local_ips.contains(&k.local) {
-            return UdpMatch::Missing;
-        }
-        let Some(entries) = self.udp_sockets.get(&k.lport) else {
-            return UdpMatch::Missing;
-        };
-        let mut matching = entries.iter().filter(|s| {
-            let e = &s.entry;
-            (e.local == k.local
-                || (e.local.is_unspecified() && e.local.is_ipv4() == k.local.is_ipv4()))
-                && (e.rport == 0 || (e.remote == k.remote && e.rport == k.rport))
-        });
-        let Some(s) = matching.next() else {
-            return UdpMatch::Missing;
-        };
-        if s.entry.ambiguous || matching.next().is_some() {
-            return UdpMatch::Ambiguous;
-        }
-        UdpMatch::Unique(UdpOwner {
-            generation: s.generation,
-            since: s.since,
-            pid: s.entry.pid,
-            started: s.owner_started,
-        })
-    }
-
+    /// Владелец меняется только по доказательству другого владельца. Отсутствие сокета
+    /// ничего не доказывает: сервер досылает пакеты и после закрытия порта, и один такой
+    /// пакет иначе лишал бы процесс всего потока, а с ним и основного трафика игры.
     fn attribute_udp(c: &mut Conn, owner: UdpMatch, procs: Option<&HashMap<i32, &ProcInfo>>) {
         if c.owner_ambiguous {
             return;
         }
-        match owner {
-            UdpMatch::Unique(o)
-                if c.first_seen >= o.since
-                    && c.udp_generation.is_none_or(|g| g == o.generation) =>
-            {
-                c.udp_generation = Some(o.generation);
-                if let Some(pid) = o.pid {
-                    c.pid = Some(pid);
-                    c.owner_started = o.started.or(c.owner_started);
-                    if let Some(procs) = procs {
-                        c.pname = procs.get(&pid).map(|p| p.name.clone());
-                    }
-                }
-            }
-            UdpMatch::Missing if c.udp_generation.is_none() => {}
-            _ => {
-                c.owner_ambiguous = true;
-                c.pid = None;
-                c.owner_started = None;
-                c.pname = None;
+        let o = match owner {
+            UdpMatch::Missing => return,
+            UdpMatch::Ambiguous => return c.dispute_owner(),
+            UdpMatch::Unique(o) => o,
+        };
+        let same_socket = c.udp_generation == Some(o.generation);
+        // Процесс пересоздал сокет на том же порту: кортеж остается его трафиком.
+        let same_process = c.pid.is_some()
+            && c.pid == o.pid
+            && c.owner_started
+                .zip(o.started)
+                .is_none_or(|(old, new)| old == new);
+        // Новому сокету достается только то, что появилось после его создания.
+        let unclaimed = c.pid.is_none() && c.udp_generation.is_none() && c.first_seen >= o.since;
+        if !(same_socket || same_process || unclaimed) {
+            return c.dispute_owner();
+        }
+        c.udp_generation = Some(o.generation);
+        if let Some(pid) = o.pid {
+            c.pid = Some(pid);
+            c.owner_started = o.started.or(c.owner_started);
+            if let Some(p) = procs.and_then(|m| m.get(&pid)) {
+                c.set_process_name(&p.name);
             }
         }
     }
@@ -421,11 +438,11 @@ impl Store {
         self.conns.entry(k).or_insert_with(|| Conn {
             id: key_id(&k),
             proto: k.proto.as_str(),
-            local: k.local.to_string(),
+            local: k.local,
             lport: k.lport,
-            remote: k.remote.to_string(),
+            remote: k.remote,
             rport: k.rport,
-            state: "NEW".into(),
+            state: "NEW",
             pid: None,
             owner_started: None,
             pname: None,
@@ -477,12 +494,22 @@ impl Store {
             }
             alive.insert(k);
             let pid = s.pid;
-            let pname = pid.and_then(|p| procs.get(&p)).map(|p| p.name.clone());
-            let owner_started = pid.and_then(|p| procs.get(&p)).map(|p| p.started);
-            let udp_owner = self.udp_owner(&k);
+            let process = pid.and_then(|p| procs.get(&p));
+            let owner_started = process.map(|p| p.started);
+            let udp_match = if s.proto == Proto::Udp {
+                udp_owner(&self.udp_sockets, &self.local_ips, &k)
+            } else {
+                UdpMatch::Missing
+            };
             let c = self.entry(k, false);
-            let terminal = matches!(s.state, "TIME_WAIT" | "CLOSE" | "DELETE_TCB");
+            let terminal = matches!(s.state, "TIME_WAIT" | "CLOSED" | "DELETE_TCB");
             if s.proto == Proto::Tcp {
+                // Тот же экземпляр процесса снова на этом кортеже: владелец доказан, даже если
+                // строка на время пропала из таблицы или мелькнула как закрытая.
+                let same_instance = pid.is_some()
+                    && c.pid == pid
+                    && owner_started.is_some()
+                    && c.owner_started == owner_started;
                 let reused = c.pid.zip(pid).is_some_and(|(old, new)| old != new)
                     || c.owner_started
                         .zip(owner_started)
@@ -491,60 +518,66 @@ impl Store {
                     || c.tcp_cookie
                         .zip(s.cookie)
                         .is_some_and(|(old, new)| old != new)
-                    || (c.closed && !terminal && !c.from_packets_only);
+                    || (c.closed && !terminal && !c.from_packets_only && !same_instance);
                 if reused {
-                    c.owner_ambiguous = true;
-                    c.pid = None;
-                    c.owner_started = None;
-                    c.pname = None;
+                    c.dispute_owner();
                     c.sni = None;
                     c.domain = None;
                 }
                 c.tcp_cookie = s.cookie.or(c.tcp_cookie);
             }
-            c.state = s.state.to_string();
+            if s.state != STATE_OPEN || c.closed || c.state == "NEW" {
+                c.state = s.state;
+            }
             c.last_seen = t;
             c.from_packets_only = false;
             c.closed = terminal;
             if s.proto == Proto::Udp {
-                Self::attribute_udp(c, udp_owner, Some(procs));
+                Self::attribute_udp(c, udp_match, Some(procs));
             } else if pid.is_some() && !c.owner_ambiguous {
                 c.pid = pid;
                 c.owner_started = owner_started.or(c.owner_started);
-                c.pname = pname;
+                if let Some(p) = process {
+                    c.set_process_name(&p.name);
+                }
             }
         }
         // Владение UDP проверяется для пакетов из последнего интервала.
         // Закрытые записи остаются историей прежнего владельца, новый сокет
         // на том же порту не забирает их себе.
-        let keys: Vec<_> = self.conns.keys().copied().collect();
-        for k in keys {
-            let owner = self.udp_owner(&k);
-            let c = self.conns.get_mut(&k).unwrap();
-            if k.proto == Proto::Udp && !alive.contains(&k) {
+        let Store {
+            conns,
+            udp_sockets,
+            local_ips,
+            ..
+        } = self;
+        for (k, c) in conns.iter_mut() {
+            let seen = alive.contains(k);
+            if k.proto == Proto::Udp && !seen {
+                let owner = udp_owner(udp_sockets, local_ips, k);
                 let active = matches!(owner, UdpMatch::Unique(o)
                     if c.udp_generation.is_none_or(|g| g == o.generation));
                 if !c.closed && active {
                     Self::attribute_udp(c, owner, Some(procs));
-                    c.state = "ACTIVE".into();
+                    c.state = "ACTIVE";
                 }
                 if !active {
                     c.closed = true;
-                    c.state = "CLOSED".into();
+                    c.state = "CLOSED";
                 }
                 continue;
             }
-            if c.closed || alive.contains(&k) {
+            if c.closed || seen {
                 continue;
             }
             if c.state != "NEW" {
                 c.closed = true;
                 if c.state != "TIME_WAIT" {
-                    c.state = "CLOSED".into();
+                    c.state = "CLOSED";
                 }
             } else if t.saturating_sub(c.last_seen) > PACKET_ONLY_IDLE_MS {
                 c.closed = true;
-                c.state = "CLOSED".into();
+                c.state = "CLOSED";
             }
         }
     }
@@ -629,15 +662,19 @@ impl Store {
             }
         };
         let known = self.conns.contains_key(&k);
-        let udp_owner = self.udp_owner(&k);
+        let udp_match = if p.proto == Proto::Udp {
+            udp_owner(&self.udp_sockets, &self.local_ips, &k)
+        } else {
+            UdpMatch::Missing
+        };
         let c = self.entry(k, !known);
         if p.proto == Proto::Udp {
-            Self::attribute_udp(c, udp_owner, None);
+            Self::attribute_udp(c, udp_match, None);
             c.closed = false;
-            c.state = "NEW".into();
+            c.state = "NEW";
         } else if c.closed && c.from_packets_only {
             c.closed = false;
-            c.state = "NEW".into();
+            c.state = "NEW";
         }
         c.last_seen = now_ms();
         if outgoing || !incoming {
@@ -658,12 +695,12 @@ impl Store {
     /// может прийти позже PTR (из кеша Windows или повторного запроса) и заменяет его.
     pub fn enrich_names(&mut self) {
         let dns = &self.dns;
+        let now = now_ms();
         for c in self.conns.values_mut() {
             if c.sni.is_some() {
                 continue;
             }
-            let ip = c.remote.parse::<IpAddr>().ok();
-            let known = ip.and_then(|ip| well_known_label(&ip, c.rport));
+            let known = well_known_label(&c.remote, c.rport);
             let is_label = |d: &str| known.is_some_and(|(en, ru)| d == en || d == ru);
             // Закрытое соединение сохраняет DNS-имя, под которым шло: позже тот же
             // адрес CDN отвечает за другой домен. PTR и подпись по-прежнему заменяются.
@@ -671,34 +708,82 @@ impl Store {
                 .domain
                 .as_deref()
                 .is_some_and(|d| c.ptr.as_deref() != Some(d) && !is_label(d));
-            if let Some(name) = ip
-                .as_ref()
-                .and_then(|ip| dns.get(ip).and_then(|d| d.unique(now_ms())))
-                && !frozen
-            {
+            if !frozen && let Some(name) = dns.get(&c.remote).and_then(|d| d.unique(now)) {
                 if c.domain.as_ref() != Some(name) {
                     c.domain = Some(name.clone());
                 }
                 continue;
             }
-            if let Some((en, ru)) = known
-                && c.domain.as_deref().is_some_and(|d| d == en || d == ru)
+            let label = known.map(|(en, ru)| crate::i18n::tr(en, ru));
+            if let Some(label) = label
+                && c.domain.as_deref().is_some_and(is_label)
             {
-                c.domain = Some(crate::i18n::tr(en, ru).to_string());
+                if c.domain.as_deref() != Some(label) {
+                    c.domain = Some(label.to_string());
+                }
                 continue;
             }
             if c.domain.is_some() {
                 continue;
             }
-            if let Some(ptr) = &c.ptr {
-                c.domain = Some(ptr.clone());
-                continue;
-            }
-            if let Some((en, ru)) = known {
-                c.domain = Some(crate::i18n::tr(en, ru).to_string());
+            if c.ptr.is_some() {
+                c.domain.clone_from(&c.ptr);
+            } else if let Some(label) = label {
+                c.domain = Some(label.to_string());
             }
         }
     }
+}
+
+/// Сокет порта, которому принадлежит кортеж. Несколько сокетов одного процесса
+/// (SO_REUSEADDR) спора не создают. Сокет `::` с IPV6_V6ONLY=0 принимает и IPv4,
+/// но виден только в таблице IPv6, поэтому проверяется, если своего семейства нет.
+fn udp_owner(
+    sockets: &HashMap<u16, Vec<UdpSocket>>,
+    local_ips: &HashSet<IpAddr>,
+    k: &ConnKey,
+) -> UdpMatch {
+    if !local_ips.contains(&k.local) {
+        return UdpMatch::Missing;
+    }
+    let Some(entries) = sockets.get(&k.lport) else {
+        return UdpMatch::Missing;
+    };
+    let reachable = |e: &SockEntry| e.rport == 0 || (e.remote == k.remote && e.rport == k.rport);
+    let mut matching = entries
+        .iter()
+        .filter(|s| {
+            let e = &s.entry;
+            (e.local == k.local
+                || (e.local.is_unspecified() && e.local.is_ipv4() == k.local.is_ipv4()))
+                && reachable(e)
+        })
+        .peekable();
+    let dual_stack = if matching.peek().is_none() && k.local.is_ipv4() {
+        entries
+            .iter()
+            .find(|s| s.entry.local == IpAddr::V6(Ipv6Addr::UNSPECIFIED) && s.entry.rport == 0)
+    } else {
+        None
+    };
+    let Some(s) = matching.next().or(dual_stack) else {
+        return UdpMatch::Missing;
+    };
+    let same_owner = |other: &UdpSocket| {
+        !other.entry.ambiguous
+            && other.entry.pid.is_some()
+            && other.entry.pid == s.entry.pid
+            && other.owner_started == s.owner_started
+    };
+    if s.entry.ambiguous || !matching.all(same_owner) {
+        return UdpMatch::Ambiguous;
+    }
+    UdpMatch::Unique(UdpOwner {
+        generation: s.generation,
+        since: s.since,
+        pid: s.entry.pid,
+        started: s.owner_started,
+    })
 }
 
 #[cfg(test)]
@@ -756,6 +841,7 @@ mod tests {
     }
 
     fn conn<'a>(s: &'a Store, remote: &str) -> &'a Conn {
+        let remote = ip(remote);
         s.conns.values().find(|c| c.remote == remote).unwrap()
     }
 
@@ -908,21 +994,125 @@ mod tests {
     }
 
     #[test]
-    fn reused_tuple_does_not_relabel_the_combined_history() {
-        for pid in [100, 200] {
-            let mut s = store();
+    fn tuple_reused_by_another_process_does_not_relabel_the_combined_history() {
+        let mut s = store();
+        s.apply_sockets(&[socket("0.0.0.0", Some(100), 1)], &HashMap::new());
+        s.apply_packet(&outbound());
+        // Даже если закрытие прошло между опросами, смена cookie заметна.
+        let replacement = [socket("0.0.0.0", Some(200), 2)];
+        s.apply_sockets(&replacement, &HashMap::new());
+        assert_eq!(conn(&s, "198.51.100.20").pid, Some(100));
+        s.apply_packet(&outbound());
+        s.apply_sockets(&replacement, &HashMap::new());
+        let c = conn(&s, "198.51.100.20");
+        assert_eq!(c.pid, None);
+        assert_eq!(c.tx_pkts, 2);
+    }
+
+    #[test]
+    fn process_recreating_its_socket_keeps_the_flow() {
+        let mut s = store();
+        s.apply_sockets(&[socket("0.0.0.0", Some(100), 1)], &HashMap::new());
+        s.apply_packet(&outbound());
+        s.apply_sockets(&[socket("0.0.0.0", Some(100), 2)], &HashMap::new());
+        s.apply_packet(&outbound());
+        assert_eq!(conn(&s, "198.51.100.20").pid, Some(100));
+    }
+
+    #[test]
+    fn late_packets_after_socket_close_keep_the_owner_of_the_flow() {
+        let mut s = store();
+        let socks = [socket("0.0.0.0", Some(100), 1)];
+        s.apply_sockets(&socks, &HashMap::new());
+        let k = s.apply_packet(&outbound());
+        // Игра закрыла сокет, а сервер еще досылает пакеты в закрытый порт.
+        s.apply_sockets(&[], &HashMap::new());
+        assert!(s.conns[&k].closed);
+        s.apply_packet(&packet("198.51.100.20", 27015, "192.0.2.10", 40000));
+        s.apply_sockets(&[], &HashMap::new());
+        let c = &s.conns[&k];
+        assert_eq!(c.pid, Some(100));
+        assert_eq!(c.rx_pkts, 1);
+        assert!(c.closed);
+    }
+
+    #[test]
+    fn unreadable_socket_table_does_not_disturb_a_long_flow() {
+        let mut s = store();
+        s.apply_sockets(&[socket("0.0.0.0", Some(100), 1)], &HashMap::new());
+        let k = s.apply_packet(&outbound());
+        // Сокета нет в одном снимке, пакеты при этом продолжают идти.
+        s.apply_sockets(&[], &HashMap::new());
+        s.apply_packet(&outbound());
+        s.apply_sockets(&[socket("0.0.0.0", Some(100), 1)], &HashMap::new());
+        s.apply_packet(&outbound());
+        assert_eq!(s.conns[&k].pid, Some(100));
+    }
+
+    #[test]
+    fn dual_stack_wildcard_socket_owns_ipv4_flows() {
+        let mut s = store();
+        s.apply_sockets(&[socket("::", Some(100), 1)], &HashMap::new());
+        s.apply_packet(&outbound());
+        assert_eq!(conn(&s, "198.51.100.20").pid, Some(100));
+
+        // Свой IPv4-сокет важнее двойного стека другого процесса.
+        let mut s = store();
+        s.apply_sockets(
+            &[socket("::", Some(200), 1), socket("0.0.0.0", Some(100), 2)],
+            &HashMap::new(),
+        );
+        s.apply_packet(&outbound());
+        assert_eq!(conn(&s, "198.51.100.20").pid, Some(100));
+    }
+
+    #[test]
+    fn several_sockets_of_one_process_are_not_a_dispute() {
+        let mut s = store();
+        s.apply_sockets(
+            &[
+                socket("0.0.0.0", Some(100), 1),
+                socket("192.0.2.10", Some(100), 2),
+            ],
+            &HashMap::new(),
+        );
+        s.apply_packet(&outbound());
+        assert_eq!(conn(&s, "198.51.100.20").pid, Some(100));
+    }
+
+    #[test]
+    fn recording_keeps_the_owner_until_another_owner_is_proven() {
+        let mut s = store();
+        let mut recorded = {
             s.apply_sockets(&[socket("0.0.0.0", Some(100), 1)], &HashMap::new());
-            s.apply_packet(&outbound());
-            // Даже если закрытие прошло между опросами, смена cookie заметна.
-            let replacement = [socket("0.0.0.0", Some(pid), 2)];
-            s.apply_sockets(&replacement, &HashMap::new());
-            assert_eq!(conn(&s, "198.51.100.20").pid, Some(100));
-            s.apply_packet(&outbound());
-            s.apply_sockets(&replacement, &HashMap::new());
-            let c = conn(&s, "198.51.100.20");
-            assert_eq!(c.pid, None);
-            assert_eq!(c.tx_pkts, 2);
-        }
+            let k = s.apply_packet(&outbound());
+            s.conns[&k].clone()
+        };
+        // История очищена, новый ряд пока без владельца.
+        s.conns.clear();
+        let k = s.apply_packet(&packet("192.0.2.10", 40000, "198.51.100.20", 27015));
+        let mut fresh = s.conns[&k].clone();
+        fresh.pid = None;
+        fresh.owner_started = None;
+        recorded.update_recording(&fresh);
+        assert_eq!(recorded.pid, Some(100));
+
+        fresh.pid = Some(200);
+        recorded.update_recording(&fresh);
+        assert_eq!(recorded.pid, None);
+        fresh.pid = Some(100);
+        recorded.update_recording(&fresh);
+        assert_eq!(recorded.pid, None, "the dispute is not forgotten");
+    }
+
+    #[test]
+    fn well_known_labels_do_not_depend_on_text_formatting() {
+        let localhost = Some(("localhost", "localhost"));
+        assert_eq!(well_known_label(&ip("127.0.0.1"), 80), localhost);
+        assert_eq!(well_known_label(&ip("::1"), 80), localhost);
+        assert!(well_known_label(&ip("127.0.0.53"), 53).is_some());
+        assert!(well_known_label(&ip("127.0.0.53"), 80).is_none());
+        assert!(well_known_label(&ip("198.51.100.20"), 53).is_none());
     }
 
     #[test]
@@ -993,6 +1183,74 @@ mod tests {
         s.apply_sockets(&[tcp_socket(Some(100), None)], &HashMap::new());
         assert_eq!(s.conns[&k].pid, None);
         assert_eq!(s.conns[&k].tx_pkts, 1);
+    }
+
+    fn demo_process(started: u64) -> ProcInfo {
+        ProcInfo {
+            pid: 100,
+            started,
+            ppid: 0,
+            comm: "demo".into(),
+            name: "DemoGame.exe".into(),
+            cmdline: "DemoGame.exe".into(),
+            proton: false,
+        }
+    }
+
+    /// Таблица Windows со смещенным полем состояния: соединение "мигает", и это не повод
+    /// отбирать у него владельца и домен.
+    #[test]
+    fn flapping_tcp_row_of_one_process_keeps_owner_and_state() {
+        let mut s = store();
+        let process = demo_process(5);
+        let procs = HashMap::from([(100, &process)]);
+        s.apply_sockets(&[tcp_socket(Some(100), None)], &procs);
+        let k = s.apply_packet(&tcp_packet());
+        let mut noisy = tcp_socket(Some(100), None);
+        noisy.state = STATE_OPEN;
+        s.apply_sockets(std::slice::from_ref(&noisy), &procs);
+        assert_eq!(s.conns[&k].state, "ESTABLISHED");
+        assert!(!s.conns[&k].closed);
+
+        // Строка пропала на один опрос и вернулась.
+        s.apply_sockets(&[], &procs);
+        assert!(s.conns[&k].closed);
+        s.apply_sockets(std::slice::from_ref(&noisy), &procs);
+        assert!(!s.conns[&k].closed);
+        assert_eq!(s.conns[&k].state, STATE_OPEN);
+        assert_eq!(s.conns[&k].pid, Some(100));
+        assert_eq!(s.conns[&k].pname.as_deref(), Some("DemoGame.exe"));
+        assert_eq!(s.conns[&k].sni.as_deref(), Some("example.com"));
+    }
+
+    #[test]
+    fn new_tcp_row_with_unreadable_state_is_shown_as_open() {
+        let mut s = store();
+        let mut noisy = tcp_socket(Some(100), None);
+        noisy.state = STATE_OPEN;
+        s.apply_sockets(std::slice::from_ref(&noisy), &HashMap::new());
+        let k = s.conns.keys().next().copied().unwrap();
+        assert_eq!(s.conns[&k].state, STATE_OPEN);
+        s.apply_sockets(&[tcp_socket(Some(100), None)], &HashMap::new());
+        assert_eq!(s.conns[&k].state, "ESTABLISHED");
+    }
+
+    #[test]
+    fn reopened_tuple_of_a_restarted_process_is_still_disputed() {
+        let mut s = store();
+        let first = demo_process(5);
+        let second = demo_process(6);
+        s.apply_sockets(
+            &[tcp_socket(Some(100), None)],
+            &HashMap::from([(100, &first)]),
+        );
+        let k = s.apply_packet(&tcp_packet());
+        s.apply_sockets(&[], &HashMap::from([(100, &first)]));
+        s.apply_sockets(
+            &[tcp_socket(Some(100), None)],
+            &HashMap::from([(100, &second)]),
+        );
+        assert_eq!(s.conns[&k].pid, None);
     }
 
     #[test]

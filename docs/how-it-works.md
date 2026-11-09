@@ -62,9 +62,16 @@ connection tuple contains packets from different socket lifetimes, it remains
 unattributed rather than relabeling its whole history. Socket polling still cannot
 reliably identify sockets created and closed entirely between polls.
 
-For TCP, a changed inode or PID, or reopening an observed closed tuple, disputes
-the combined history. Counters remain, but the process identity and previous SNI
-are cleared. Such a tuple is excluded from process-scoped views and dumps.
+For TCP, a changed inode or PID disputes the combined history, and so does reopening
+an observed closed tuple, unless the same process instance holds it again. Counters
+remain, but the process identity and previous SNI are cleared. Such a tuple is excluded
+from process-scoped views and dumps.
+
+On Windows the state field of the TCP table can be shifted relative to its rows, with
+values like LISTEN or 0 on established connections. A table with impossible rows is
+treated as shifted: states that the shift produces do not change the state of a
+connection, and a row without an owner counts as TIME_WAIT. A flickering row therefore
+neither closes a connection nor disputes its owner.
 
 Process identity includes the start time, not just the PID. A reused PID cannot
 join an existing recording group or keep its old selection. The selected and
@@ -106,11 +113,15 @@ with a 10-second idle lifetime. QUIC reconstructs truncated packet numbers befor
 decryption. Ethernet VLAN/QinQ and IPv6 hop-by-hop, routing, destination, AH and
 initial fragment headers are parsed. IP fragments are not reassembled.
 
-The live capture keeps full frames. Packet accounting has a queue of 8192 decoded
-packets. On Windows an ETW callback only copies into a 256-event queue; a worker
-parses and writes frames, and recording controls use the same queue. PktMon startup
-no longer stops another program's capture; an occupied capture is a startup error.
-Overload losses appear in API statistics and the capture indicator's tooltip.
+The live capture keeps full frames. Packet accounting has a queue of 65,536 decoded
+packets, and connections reach the recording metadata once per poll, not under a lock
+on every packet. On Windows an ETW callback only copies into a queue bounded by
+256 MiB; a worker parses and writes frames, and recording controls use the same queue.
+Frame types that PktMon reports and SocketTrail does not parse are counted separately
+and are not losses. PktMon startup stops only a capture left by a previous run of
+SocketTrail; another program's capture is not touched, and an occupied capture is a
+startup error. Overload losses appear in API statistics and the capture indicator's
+tooltip.
 
 Noninitial IPv4 fragments are not parsed as TCP/UDP because they have no transport
 header. IP fragments are not reassembled, so counters for fragmented traffic can
@@ -152,10 +163,23 @@ a file. When the recording stops, SocketTrail rewrites the file once:
    evicts an old connection. Connections opened after the start are included.
    Unknown or disputed ownership is excluded: sharing an IP or CDN domain is not
    evidence of belonging to the same process.
-2. Every packet gets a pcapng comment `process [pid] -> domain`, and the section header
+2. With **Compact file**, packets beyond the first 64 KiB of a flow keep their headers
+   and 16 bytes of data, frames that cannot be parsed keep 128 bytes, and DNS stays
+   whole. Only the captured length shrinks: the original length stays in the packet
+   block, so Wireshark shows real sizes.
+3. Every packet gets a pcapng comment `process [pid] -> domain`, and the section header
    says what was recorded.
-3. A `.json` map is saved next to the file: the period, the process, its PIDs and every
-   connection with names, owners and traffic.
+4. With **Split into parts**, the rewritten file is copied into `<dump>.parts/`, one file
+   per domain or subnet, and the 64 largest groups get their own file.
+5. `<dump>.json` keeps the summary with `format: 2`, `<dump>.connections.jsonl` keeps one
+   line per connection with what was counted from the file. Flows from the file that
+   are missing from the map are listed too, marked as not owned.
+
+The same steps run again from the **Dumps** panel. Compaction and splitting keep the
+scope of the file, only an explicit filter changes it. Processing is idempotent: labels
+are replaced, and the removed data of a compacted file stays removed. A summary of the
+earlier format with a `conns` array is read as well and converted, using the local
+addresses of its connections to orient flows missing from the map.
 
 A process-only recording stops by itself 15 seconds after the process exits.
 
@@ -171,12 +195,15 @@ The JSON map distinguishes `requested_only_process` from the actual `only_proces
 `processing` includes the processing status and whether capture ended cleanly
 (`capture_complete`).
 
-Recording metadata is limited to 40,000 connection tuples and 4096 process
-instances. Reaching a limit stops recording with an error. Finalization waits up
-to two seconds for already accepted packets to be accounted for. Tracking losses
-or incomplete ownership preserve a process dump as unfiltered, with an error and
-`capture_complete: false`; truncated blocks and mismatched pcapng lengths leave
-the original file intact.
+Recording metadata is limited to 100,000 connection tuples and 4096 process
+instances. Reaching a limit does not stop recording: connections beyond it stay
+unlabeled, do not pass the process filter, and a warning is added. Finalization waits
+up to two seconds for already accepted packets to be accounted for.
+
+Filtering always runs. An unknown connection is excluded in any case, so capture losses
+can only make a file incomplete and cannot mix foreign traffic into it. Losses become
+warnings and `capture_complete: false`. Truncated blocks and mismatched pcapng lengths
+leave the original file intact, and so does a filter that would keep no packets.
 
 History still combines repeated lifetimes of one tuple conservatively, and its
 timestamps reflect observation rather than wire capture time. Separating these
@@ -197,11 +224,24 @@ it also watches the browser process of its own profile through the `SingletonLoc
 in the profile and exits right after that process ends. If the process cannot be found,
 only the channel is used.
 
+The table is computed on the server. `/api/state` takes the scope, view, sort order,
+filters and page and serializes only the rows of the page, outside the history lock.
+`/api/facets` and `/api/export` take the same parameters, so value lists and reports
+always match the table. The time a connection first appeared is the default order and
+the tiebreaker, because it does not change while a connection lives; value lists are
+ordered independently of their counters for the same reason.
+
 ## Code layout
 
 | Module | Purpose |
 |---|---|
-| `src/main.rs` | startup, HTTP API, polling loop, dump control |
+| `src/main.rs` | startup, command line, window, shutdown |
+| `src/app.rs` | application state, packet and polling loops, name lookups in the background |
+| `src/api.rs` | HTTP API and request guard |
+| `src/query.rs` | table filters, sorting, pages, summaries and value lists |
+| `src/recording.rs` | recording lifecycle: start, ownership tracking, stop, reprocessing |
+| `src/dumpfile.rs` | dump files: processing, summary, connection map, parts, earlier format |
+| `src/localtime.rs` | local time for file names and captions, without dependencies |
 | `src/procs/` | process inventory: `/proc` on Linux with Proton detection, Toolhelp32 on Windows; descendant tree |
 | `src/sockets/` | socket snapshot: `/proc/net/*` and inode -> PID on Linux, IP Helper tables on Windows |
 | `src/pcap.rs` | pcapng stream parsing, SNI from the TLS ClientHello, DNS responses |
@@ -210,7 +250,7 @@ only the channel is used.
 | `src/capture/` | platform capture: dumpcap on Linux, own PktMon/ETW engine on Windows |
 | `src/etw.rs` | Windows: capture through PktMon and ETW, `.pcapng` writing |
 | `src/dnscache.rs` | Windows: names from the system DNS cache |
-| `src/annotate.rs` | dump post-processing: packet labels, process traffic selection |
+| `src/annotate.rs` | pcapng rewriting: packet labels, process traffic selection, compaction, splitting |
 | `src/resolve.rs` | PTR and ASN lookups |
 | `src/cache.rs` | on-disk name cache |
 | `src/state.rs` | connection history, counters, name merging |

@@ -22,6 +22,8 @@ only on system DLLs. Windows 10 and 11, x64.
 | Processes and connections | yes | yes |
 | Domains | from the system DNS cache | from DNS responses and SNI of TLS and QUIC, browsers included |
 | Traffic per connection | no | yes |
+| UDP targets | no | yes |
+| Connections shorter than 250 ms | no | yes |
 | Dumps `.pcapng` | no | yes, through PktMon |
 | Extra software | none | none |
 
@@ -41,6 +43,10 @@ SocketTrail uses only its own PktMon/ETW capture engine. Wireshark, Npcap and
 `dumpcap.exe` are never started, even when installed. Packet capture and dump
 recording are unavailable without administrator rights.
 
+The badge in the window header shows the mode: **Full mode** or **Basic mode**. Run as
+administrator for analysis and dumps, because that is the complete picture. The mode
+without rights suits a quick look at which programs hold connections.
+
 ## Differences from Linux
 
 - The Windows UDP table has no remote address, so UDP targets come only from packet
@@ -49,7 +55,21 @@ recording are unavailable without administrator rights.
 - PktMon captures from all network adapters. The `-i` option has no effect on Windows.
 - While SocketTrail runs, `pktmon` is busy with it: starting another pktmon capture
   stops ours.
-- Proton detection is not needed. The PROTON badge is not shown.
+- On some systems the state field of the TCP table is shifted relative to its rows:
+  `netstat -ano` shows `LISTENING` with a remote address, and the states of many rows
+  change at once, while addresses and PIDs stay correct. SocketTrail recognizes this by
+  impossible rows, keeps the last reliable state of a connection and shows `OPEN` until
+  one has been read. Connection ownership is not affected.
+- Proton detection is not needed. The PROTON badge and the **Proton** tab are not shown.
+
+## VPN and TUN adapters
+
+With a TUN adapter the same traffic is visible twice: inside the tunnel, where programs
+talk to their servers from the tunnel address, and outside, where the computer talks
+to the VPN server from the physical adapter. PktMon captures both. Only the inner
+connections belong to a program, so a process dump keeps them and leaves the outer
+tunnel out. In a whole-host dump the outer tunnel is one large flow to the VPN server,
+and splitting puts it into a part of its own.
 
 ## Where data is stored
 

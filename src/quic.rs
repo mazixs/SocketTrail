@@ -535,7 +535,7 @@ mod tests {
         ip.extend(&quic);
 
         let mut a = Assembler::new();
-        let p = crate::pcap::parse_link_with(101, &ip, Some(&mut a)).unwrap();
+        let p = crate::pcap::parse_link_with_quic(101, &ip, &mut a).unwrap();
         assert_eq!(p.sni.as_deref(), Some("example.com"));
         assert_eq!(crate::pcap::parse_link(101, &ip).unwrap().sni, None);
     }

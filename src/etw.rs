@@ -10,25 +10,33 @@ use std::io::{BufWriter, Write};
 use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
 use std::process::Command;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock, mpsc};
 
 use crate::capture::PacketSender;
+use windows_sys::Win32::Foundation::CloseHandle;
+use windows_sys::Win32::Globalization::{CP_OEMCP, MultiByteToWideChar};
 use windows_sys::Win32::System::Diagnostics::Etw::{
     CONTROLTRACE_HANDLE, CloseTrace, ControlTraceW, EVENT_CONTROL_CODE_ENABLE_PROVIDER,
-    EVENT_RECORD, EVENT_TRACE_CONTROL_STOP, EVENT_TRACE_LOGFILEW, EVENT_TRACE_PROPERTIES,
-    EVENT_TRACE_REAL_TIME_MODE, EnableTraceEx2, OpenTraceW, PROCESS_TRACE_MODE_EVENT_RECORD,
-    PROCESS_TRACE_MODE_REAL_TIME, PROCESSTRACE_HANDLE, ProcessTrace, StartTraceW,
-    TRACE_LEVEL_INFORMATION, WNODE_FLAG_TRACED_GUID,
+    EVENT_RECORD, EVENT_TRACE_CONTROL_QUERY, EVENT_TRACE_CONTROL_STOP, EVENT_TRACE_LOGFILEW,
+    EVENT_TRACE_PROPERTIES, EVENT_TRACE_REAL_TIME_MODE, EnableTraceEx2, OpenTraceW,
+    PROCESS_TRACE_MODE_EVENT_RECORD, PROCESS_TRACE_MODE_REAL_TIME, PROCESSTRACE_HANDLE,
+    ProcessTrace, QueryAllTracesW, StartTraceW, TRACE_LEVEL_INFORMATION, WNODE_FLAG_TRACED_GUID,
 };
+use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
 
 use crate::i18n::Text;
 use crate::pcap;
 
+const SESSION_PREFIX: &str = "SocketTrail-";
+
 fn session_name() -> String {
-    format!("SocketTrail-{}", std::process::id())
+    format!("{SESSION_PREFIX}{}", std::process::id())
 }
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+/// Предел памяти под кадры в очереди к рабочему потоку: запись на медленный диск не
+/// должна ни терять всплеск трафика, ни съедать всю память при долгом отставании.
+const QUEUE_BYTES: usize = 256 << 20;
 const EVENT_PACKET: u16 = 160;
 /// Поля события 160 до Payload: PktGroupId u64, 7 x u16, 2 x u32, 2 x u16.
 const HEADER: usize = 34;
@@ -56,11 +64,34 @@ fn pktmon(args: &[&str]) -> Result<String, String> {
         .creation_flags(CREATE_NO_WINDOW)
         .output()
         .map_err(|e| t!("pktmon did not start: {e}", "pktmon не запустился: {e}"))?;
-    let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let mut text = console_text(&out.stdout).trim().to_string();
+    if text.is_empty() {
+        text = console_text(&out.stderr).trim().to_string();
+    }
     if out.status.success() {
         Ok(text)
     } else {
         Err(format!("pktmon {}: {text}", args.join(" ")))
+    }
+}
+
+/// Консольные утилиты пишут в кодировке OEM (866 на русской системе), а не в UTF-8.
+fn console_text(bytes: &[u8]) -> String {
+    if let Ok(s) = std::str::from_utf8(bytes) {
+        return s.to_string();
+    }
+    let Ok(len) = i32::try_from(bytes.len()) else {
+        return String::from_utf8_lossy(bytes).into_owned();
+    };
+    // SAFETY: длины переданы вместе с буферами, размер результата запрошен первым вызовом.
+    unsafe {
+        let need = MultiByteToWideChar(CP_OEMCP, 0, bytes.as_ptr(), len, std::ptr::null_mut(), 0);
+        if need <= 0 {
+            return String::from_utf8_lossy(bytes).into_owned();
+        }
+        let mut wide = vec![0u16; need as usize];
+        let got = MultiByteToWideChar(CP_OEMCP, 0, bytes.as_ptr(), len, wide.as_mut_ptr(), need);
+        String::from_utf16_lossy(&wide[..got.max(0) as usize])
     }
 }
 
@@ -124,10 +155,39 @@ enum Work {
     Shutdown,
 }
 struct Sink {
-    queue: mpsc::SyncSender<Work>,
+    queue: mpsc::Sender<Work>,
+    /// Объем кадров, ожидающих рабочий поток.
+    queued: AtomicUsize,
     metrics: std::sync::Arc<crate::capture::Metrics>,
     error: Mutex<Option<String>>,
     bad: AtomicU64,
+}
+
+impl Sink {
+    fn new(queue: mpsc::Sender<Work>, metrics: std::sync::Arc<crate::capture::Metrics>) -> Self {
+        Self {
+            queue,
+            queued: AtomicUsize::new(0),
+            metrics,
+            error: Mutex::new(None),
+            bad: AtomicU64::new(0),
+        }
+    }
+
+    /// Вызывается из callback ETW: он не должен ждать ни диск, ни разбор, иначе потери
+    /// происходят уже в буферах самой сессии. Очередь ограничена объемом, а не числом
+    /// кадров: на ровном потоке она пуста, а всплеск спокойно переживает.
+    fn push(&self, data: &[u8], stamp: i64) {
+        let len = data.len();
+        if self.queued.fetch_add(len, Ordering::Relaxed) + len > QUEUE_BYTES {
+            self.queued.fetch_sub(len, Ordering::Relaxed);
+            self.metrics.lost_frames.fetch_add(1, Ordering::Relaxed);
+            return;
+        }
+        if self.queue.send(Work::Frame(data.to_vec(), stamp)).is_err() {
+            self.queued.fetch_sub(len, Ordering::Relaxed);
+        }
+    }
 }
 
 // Только ограниченная копия события в callback. Разбор и диск - в рабочем потоке.
@@ -140,33 +200,36 @@ fn consume(events: mpsc::Receiver<Work>, tx: PacketSender, sink: &Sink) {
     let mut dump: Option<DumpWriter> = None;
     while let Ok(event) = events.recv() {
         match event {
-            Work::Frame(data, stamp) => match packet(&data) {
-                Some((group, number, linktype, orig, frame)) => {
-                    if linktype == 0 {
-                        sink.metrics.dropped.fetch_add(1, Ordering::Relaxed);
-                        continue;
-                    }
-                    if !seen.first((group, number)) {
-                        continue;
-                    }
-                    if let Some(w) = dump.as_mut() {
-                        let iface = if linktype == 1 { 0 } else { 1 };
-                        if w.error.is_none()
-                            && let Err(e) = write_epb(&mut w.out, iface, stamp, frame, orig)
-                        {
-                            w.error = Some(e.to_string());
-                            *sink.error.lock().unwrap() = w.error.clone();
+            Work::Frame(data, stamp) => {
+                sink.queued.fetch_sub(data.len(), Ordering::Relaxed);
+                match packet(&data) {
+                    Some((group, number, linktype, orig, frame)) => {
+                        if linktype == 0 {
+                            sink.metrics.unsupported.fetch_add(1, Ordering::Relaxed);
+                            continue;
+                        }
+                        if !seen.first((group, number)) {
+                            continue;
+                        }
+                        if let Some(w) = dump.as_mut() {
+                            let iface = if linktype == 1 { 0 } else { 1 };
+                            if w.error.is_none()
+                                && let Err(e) = write_epb(&mut w.out, iface, stamp, frame, orig)
+                            {
+                                w.error = Some(e.to_string());
+                                *sink.error.lock().unwrap() = w.error.clone();
+                            }
+                        }
+                        if let Some(packet) = pcap::parse_link_live(linktype, frame, &mut parsers) {
+                            let _ = tx.send(packet);
                         }
                     }
-                    if let Some(packet) = pcap::parse_link_live(linktype, frame, &mut parsers) {
-                        let _ = tx.send(packet);
+                    None => {
+                        sink.bad.fetch_add(1, Ordering::Relaxed);
+                        sink.metrics.unsupported.fetch_add(1, Ordering::Relaxed);
                     }
                 }
-                None => {
-                    sink.bad.fetch_add(1, Ordering::Relaxed);
-                    sink.metrics.dropped.fetch_add(1, Ordering::Relaxed);
-                }
-            },
+            }
             Work::Start(path, reply) => {
                 let result = if dump.is_some() {
                     Err(std::io::Error::new(
@@ -175,8 +238,8 @@ fn consume(events: mpsc::Receiver<Work>, tx: PacketSender, sink: &Sink) {
                     ))
                 } else {
                     (|| {
-                        let mut out =
-                            BufWriter::with_capacity(1 << 20, std::fs::File::create(path)?);
+                        let file = crate::paths::new_private_file(path.as_ref())?;
+                        let mut out = BufWriter::with_capacity(1 << 20, file);
                         write_header(&mut out)?;
                         out.flush()?;
                         dump = Some(DumpWriter { out, error: None });
@@ -232,8 +295,8 @@ fn props() -> Box<Props> {
     b
 }
 
-fn stop_session() {
-    let name = wide(&session_name());
+fn stop_session(name: &str) {
+    let name = wide(name);
     let mut p = props();
     unsafe {
         ControlTraceW(
@@ -245,30 +308,91 @@ fn stop_session() {
     };
 }
 
-pub fn start(tx: PacketSender) -> Result<Session, Text> {
-    probe()?;
-    let (queue, events) = mpsc::sync_channel(256);
-    if SINK
-        .set(Sink {
-            queue,
-            metrics: tx.metrics.clone(),
-            error: Mutex::new(None),
-            bad: AtomicU64::new(0),
-        })
-        .is_err()
-    {
-        return Err(t!("capture is already running", "захват уже запущен").into());
+/// Сколько событий потеряла наша сессия: при записи это кадры, которых нет в файле.
+pub fn events_lost() -> u64 {
+    if !is_active() {
+        return 0;
     }
+    let name = wide(&session_name());
+    let mut p = props();
+    let rc = unsafe {
+        ControlTraceW(
+            CONTROLTRACE_HANDLE { Value: 0 },
+            name.as_ptr(),
+            &mut p.p,
+            EVENT_TRACE_CONTROL_QUERY,
+        )
+    };
+    if rc != 0 {
+        return 0;
+    }
+    u64::from(p.p.EventsLost) + u64::from(p.p.RealTimeBuffersLost)
+}
 
-    // PktMon общесистемный: start откажет, если захват уже занят.
-    // Нельзя останавливать чужую сессию ради своего запуска.
+/// PID из имени нашей сессии, если процесс с таким номером уже завершен.
+fn stale_session_pid(name: &str, alive: impl Fn(u32) -> bool) -> Option<u32> {
+    let pid = name.strip_prefix(SESSION_PREFIX)?.parse().ok()?;
+    (pid != std::process::id() && !alive(pid)).then_some(pid)
+}
 
-    let etl = etl_path();
-    let _ = std::fs::create_dir_all(etl.parent().unwrap_or(&etl));
-    let etl_s = etl.display().to_string();
-    // nics - только сетевые адаптеры, без промежуточных компонентов стека;
-    // memory - буфер в памяти, диск во время работы не трогается.
-    pktmon(&[
+fn process_alive(pid: u32) -> bool {
+    // SAFETY: дескриптор проверяется и сразу закрывается.
+    unsafe {
+        let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if h.is_null() {
+            // Защищенный процесс не открывается, но он жив, это не наш завершившийся.
+            return std::io::Error::last_os_error().raw_os_error() == Some(5);
+        }
+        CloseHandle(h);
+    }
+    true
+}
+
+/// После аварийного завершения ETW-сессия остается в системе и продолжает занимать
+/// память ядра. Их число ограничено, поэтому при старте убираем свои брошенные.
+fn stop_stale_sessions() {
+    #[repr(C)]
+    struct Query {
+        p: EVENT_TRACE_PROPERTIES,
+        logger: [u16; 256],
+        file: [u16; 256],
+    }
+    const MAX: usize = 64;
+    let mut list: Vec<Box<Query>> = (0..MAX)
+        .map(|_| {
+            let mut q: Box<Query> = Box::new(unsafe { std::mem::zeroed() });
+            q.p.Wnode.BufferSize = std::mem::size_of::<Query>() as u32;
+            q.p.LoggerNameOffset = std::mem::size_of::<EVENT_TRACE_PROPERTIES>() as u32;
+            q.p.LogFileNameOffset = q.p.LoggerNameOffset + std::mem::size_of::<[u16; 256]>() as u32;
+            q
+        })
+        .collect();
+    let mut pointers: Vec<*mut EVENT_TRACE_PROPERTIES> =
+        list.iter_mut().map(|q| &mut q.p as *mut _).collect();
+    let mut count = 0u32;
+    // SAFETY: каждый элемент массива указывает на буфер указанного в BufferSize размера.
+    let rc = unsafe { QueryAllTracesW(pointers.as_mut_ptr(), MAX as u32, &mut count) };
+    if rc != 0 {
+        return;
+    }
+    for q in list.iter().take(count as usize) {
+        let end = q
+            .logger
+            .iter()
+            .position(|&c| c == 0)
+            .unwrap_or(q.logger.len());
+        let name = String::from_utf16_lossy(&q.logger[..end]);
+        if stale_session_pid(&name, process_alive).is_some() {
+            stop_session(&name);
+        }
+    }
+}
+
+/// Запуск PktMon. Захват общесистемный, и чужую сессию останавливать нельзя. Если же в
+/// status указан наш файл, это прошлый запуск SocketTrail, завершившийся аварийно:
+/// без остановки он навсегда оставил бы захват недоступным.
+fn start_pktmon(etl: &str) -> Result<(), String> {
+    let args = [
         "start",
         "--capture",
         "--comp",
@@ -276,12 +400,37 @@ pub fn start(tx: PacketSender) -> Result<Session, Text> {
         "--pkt-size",
         "0",
         "--file-name",
-        &etl_s,
+        etl,
         "--file-size",
         "16",
         "--log-mode",
         "memory",
-    ])?;
+    ];
+    let Err(first) = pktmon(&args) else {
+        return Ok(());
+    };
+    let status = pktmon(&["status"]).unwrap_or_else(|text| text);
+    if !status.to_lowercase().contains(&etl.to_lowercase()) {
+        return Err(first);
+    }
+    let _ = pktmon(&["stop"]);
+    pktmon(&args).map(|_| ())
+}
+
+pub fn start(tx: PacketSender) -> Result<Session, Text> {
+    probe()?;
+    let (queue, events) = mpsc::channel();
+    if SINK.set(Sink::new(queue, tx.metrics.clone())).is_err() {
+        return Err(t!("capture is already running", "захват уже запущен").into());
+    }
+    stop_stale_sessions();
+
+    let etl = etl_path();
+    let _ = std::fs::create_dir_all(etl.parent().unwrap_or(&etl));
+    let etl_s = etl.display().to_string();
+    // nics - только сетевые адаптеры, без промежуточных компонентов стека;
+    // memory - буфер в памяти, диск во время работы не трогается.
+    start_pktmon(&etl_s)?;
 
     let name = wide(&session_name());
     let mut p = props();
@@ -308,7 +457,7 @@ pub fn start(tx: PacketSender) -> Result<Session, Text> {
         )
     };
     if rc != 0 {
-        stop_session();
+        stop_session(&session_name());
         let _ = pktmon(&["stop"]);
         return Err(t!(
             "PktMon provider not enabled, code {rc}",
@@ -418,11 +567,7 @@ unsafe extern "system" fn on_event(ev: *mut EVENT_RECORD) {
     }
     let data =
         unsafe { std::slice::from_raw_parts(ev.UserData as *const u8, ev.UserDataLength as usize) };
-    if let Err(mpsc::TrySendError::Full(_)) =
-        sink.queue.try_send(Work::Frame(data.to_vec(), h.TimeStamp))
-    {
-        sink.metrics.dropped.fetch_add(1, Ordering::Relaxed);
-    }
+    sink.push(data, h.TimeStamp);
 }
 
 /// (PktGroupId, PktNumber, linktype pcap, исходная длина, кадр). Раскладку сверяем по длине:
@@ -614,14 +759,9 @@ mod tests {
     fn worker_orders_recording_controls_and_drains_queued_frames() {
         let dir = crate::paths::TestDir::new("etw-worker");
         let path = dir.0.join("demo.pcapng");
-        let (queue, events) = mpsc::sync_channel(4);
+        let (queue, events) = mpsc::channel();
         let metrics = std::sync::Arc::new(crate::capture::Metrics::default());
-        let sink = Sink {
-            queue,
-            metrics: metrics.clone(),
-            error: Mutex::new(None),
-            bad: AtomicU64::new(0),
-        };
+        let sink = Sink::new(queue, metrics.clone());
         let (packets, mut received) = tokio::sync::mpsc::channel(4);
         std::thread::scope(|scope| {
             let worker =
@@ -639,9 +779,7 @@ mod tests {
             let mut next = first.clone();
             next[8..10].copy_from_slice(&2u16.to_le_bytes());
             for data in [first.clone(), first, next] {
-                sink.queue
-                    .send(Work::Frame(data, 133_000_000_000_000_000))
-                    .unwrap();
+                sink.push(&data, 133_000_000_000_000_000);
             }
             let (reply, result) = mpsc::channel();
             sink.queue.send(Work::Stop(reply)).unwrap();
@@ -649,11 +787,60 @@ mod tests {
             sink.queue.send(Work::Shutdown).unwrap();
             worker.join().unwrap();
         });
+        assert_eq!(sink.queued.load(Ordering::Relaxed), 0);
         assert_eq!(received.len(), 2);
         assert_eq!(received.try_recv().unwrap().sport, 40000);
         let mut reader = pcap::PcapngReader::new();
         let mut frames = Vec::new();
         reader.push(&std::fs::read(path).unwrap(), &mut frames);
         assert_eq!(frames.len(), 2);
+    }
+
+    #[test]
+    fn unknown_packet_types_are_not_counted_as_lost_traffic() {
+        let (queue, events) = mpsc::channel();
+        let metrics = std::sync::Arc::new(crate::capture::Metrics::default());
+        let sink = Sink::new(queue, metrics.clone());
+        let (packets, _received) = tokio::sync::mpsc::channel(4);
+        sink.push(&event(7, &[0xAA; 60]), 133_000_000_000_000_000);
+        sink.push(&[1, 2, 3], 133_000_000_000_000_000);
+        sink.queue.send(Work::Shutdown).unwrap();
+        consume(events, PacketSender::new(packets, metrics.clone()), &sink);
+        assert_eq!(metrics.unsupported.load(Ordering::Relaxed), 2);
+        assert_eq!(metrics.dropped.load(Ordering::Relaxed), 0);
+        assert_eq!(metrics.lost_frames.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn frames_over_the_memory_budget_are_counted_as_lost() {
+        let (queue, events) = mpsc::channel();
+        let metrics = std::sync::Arc::new(crate::capture::Metrics::default());
+        let sink = Sink::new(queue, metrics.clone());
+        sink.queued.store(QUEUE_BYTES - 10, Ordering::Relaxed);
+        sink.push(&[0u8; 10], 1);
+        sink.push(&[0u8; 1], 2);
+        assert_eq!(metrics.lost_frames.load(Ordering::Relaxed), 1);
+        assert_eq!(sink.queued.load(Ordering::Relaxed), QUEUE_BYTES);
+        assert_eq!(events.try_iter().count(), 1);
+    }
+
+    #[test]
+    fn only_our_sessions_of_finished_processes_are_stale() {
+        let dead = |_: u32| false;
+        assert_eq!(stale_session_pid("SocketTrail-4242", dead), Some(4242));
+        assert_eq!(stale_session_pid("SocketTrail-4242", |_| true), None);
+        assert_eq!(
+            stale_session_pid(&format!("SocketTrail-{}", std::process::id()), dead),
+            None
+        );
+        assert_eq!(stale_session_pid("EventLog-System", dead), None);
+        assert_eq!(stale_session_pid("SocketTrail-backup", dead), None);
+    }
+
+    #[test]
+    fn console_output_in_utf8_is_kept_and_other_bytes_do_not_panic() {
+        assert_eq!(console_text(b"ok"), "ok");
+        assert_eq!(console_text("ошибка".as_bytes()), "ошибка");
+        assert!(!console_text(&[0xAE, 0xE8, 0xA8, 0xA1, 0xAA, 0xA0]).is_empty());
     }
 }

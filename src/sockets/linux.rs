@@ -18,7 +18,7 @@ fn tcp_state(code: u8) -> &'static str {
         0x04 => "FIN_WAIT1",
         0x05 => "FIN_WAIT2",
         0x06 => "TIME_WAIT",
-        0x07 => "CLOSE",
+        0x07 => "CLOSED",
         0x08 => "CLOSE_WAIT",
         0x09 => "LAST_ACK",
         0x0A => "LISTEN",
@@ -55,10 +55,11 @@ fn parse_addr(s: &str) -> Option<(IpAddr, u16)> {
     }
 }
 
-fn parse_table(path: &str, proto: Proto, out: &mut Vec<(SockEntry, u64)>) {
+/// false - файл таблицы прочитать не удалось.
+fn parse_table(path: &str, proto: Proto, out: &mut Vec<(SockEntry, u64)>) -> bool {
     let data = match fs::read_to_string(path) {
         Ok(d) => d,
-        Err(_) => return,
+        Err(_) => return false,
     };
     for line in data.lines().skip(1) {
         let f: Vec<&str> = line.split_whitespace().collect();
@@ -94,6 +95,7 @@ fn parse_table(path: &str, proto: Proto, out: &mut Vec<(SockEntry, u64)>) {
             inode,
         ));
     }
+    true
 }
 
 /// Адреса интерфейсов нужны и для UDP, привязанного к 0.0.0.0 или ::.
@@ -134,22 +136,29 @@ pub fn local_addresses() -> Option<HashSet<IpAddr>> {
 
 /// Владелец ищется только среди `scan_pids`: обход /proc/<pid>/fd всех процессов
 /// дорогой, поэтому полную карту строим редко, а в остальное время - по выбранной группе.
-pub fn snapshot(scan_pids: &[i32]) -> Vec<SockEntry> {
+/// None - таблицу прочитать не удалось: пустой снимок закрыл бы все соединения разом.
+/// Без IPv6 файлов tcp6 и udp6 нет вовсе, это не ошибка.
+pub fn snapshot(scan_pids: &[i32]) -> Option<Vec<SockEntry>> {
     let mut raw = Vec::with_capacity(512);
-    parse_table("/proc/net/tcp", Proto::Tcp, &mut raw);
+    if !parse_table("/proc/net/tcp", Proto::Tcp, &mut raw)
+        || !parse_table("/proc/net/udp", Proto::Udp, &mut raw)
+    {
+        return None;
+    }
     parse_table("/proc/net/tcp6", Proto::Tcp, &mut raw);
-    parse_table("/proc/net/udp", Proto::Udp, &mut raw);
     parse_table("/proc/net/udp6", Proto::Udp, &mut raw);
     let owners = inode_owners(scan_pids);
-    raw.into_iter()
-        .map(|(mut s, ino)| {
-            if let Some(pids) = owners.get(&ino) {
-                s.ambiguous = pids.len() > 1;
-                s.pid = (pids.len() == 1).then(|| *pids.iter().next().unwrap());
-            }
-            s
-        })
-        .collect()
+    Some(
+        raw.into_iter()
+            .map(|(mut s, ino)| {
+                if let Some(pids) = owners.get(&ino) {
+                    s.ambiguous = pids.len() > 1;
+                    s.pid = (pids.len() == 1).then(|| *pids.iter().next().unwrap());
+                }
+                s
+            })
+            .collect(),
+    )
 }
 
 /// inode сокета -> PID. Файловые дескрипторы общие для всех потоков процесса,
@@ -207,7 +216,7 @@ mod tests {
         let udp = UdpSocket::bind("127.0.0.1:0").unwrap();
         let addr = udp.local_addr().unwrap();
         let pid = std::process::id() as i32;
-        let socks = snapshot(&[pid]);
+        let socks = snapshot(&[pid]).unwrap();
         let s = socks
             .iter()
             .find(|s| s.proto == Proto::Udp && s.local == addr.ip() && s.lport == addr.port())
@@ -244,7 +253,7 @@ mod tests {
         let parent = std::process::id() as i32;
         let child_pid = child.0.id() as i32;
         for pids in [[parent, child_pid], [child_pid, parent]] {
-            let rows = snapshot(&pids);
+            let rows = snapshot(&pids).unwrap();
             let row = rows
                 .iter()
                 .find(|s| s.proto == Proto::Udp && s.lport == socket.local_addr().unwrap().port())

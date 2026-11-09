@@ -42,9 +42,15 @@ and traffic, ready to be turned into rules.
   calls at startup. Closed connections stay in the history.
 - **Shows who owns the network.** ASN and owner for every address: Valve, Akamai,
   Fastly, Amazon and so on.
+- **A table that holds still.** Sort by time or state, filter by lists of states,
+  domains, subnets, ports and processes, pause the updates and read through pages.
+  **By address**, **By domain** and **By subnet** collapse long sessions into a few
+  rows.
 - **One-button dumps.** Record the traffic of one process into `.pcapng`. The
   recording stops by itself after the game exits, and every packet is labeled
-  `game.exe [pid] -> domain` for Wireshark.
+  `game.exe [pid] -> domain` for Wireshark. Files are compacted, and large ones are
+  split by domain and subnet, so a long session stays easy to open. Older dumps can be
+  processed the same way.
 - **Export.** Self-contained HTML report, JSON, the table as TSV.
 - **No root on Linux, no Wireshark on Windows.** Linux uses `dumpcap` with
   capabilities. Windows works without administrator rights and, with them, captures
@@ -88,9 +94,10 @@ ask: **More info** -> **Run anyway**.
 
 The process and connection list works right away. The **Restart as administrator**
 button in the window turns on packet capture: domains of browsers, traffic volume and
-dumps. No CMD or PowerShell console opens; the log is saved to
-`%LOCALAPPDATA%\SocketTrail\sockettrail.log`. Windows capture uses only the built-in
-PktMon/ETW engine. Details are in [docs/windows.md](docs/windows.md).
+dumps. Run as administrator for analysis and dumps; without it the program suits a
+quick look at who holds connections. No CMD or PowerShell console opens; the log is
+saved to `%LOCALAPPDATA%\SocketTrail\sockettrail.log`. Windows capture uses only the
+built-in PktMon/ETW engine. Details are in [docs/windows.md](docs/windows.md).
 
 > [!NOTE]
 > Domains fill in gradually. A name is learned when a program resolves it or opens
@@ -102,16 +109,26 @@ PktMon/ETW engine. Details are in [docs/windows.md](docs/windows.md).
 1. **Pick a process** on the left. Its child processes come with it; the PROTON badge
    marks programs under Proton or Wine.
 2. **Read the table.** Every connection has a domain, address, port, network owner
-   and traffic. **By address** collapses the history into one row per target.
+   and traffic. Click a header to sort, use the icon in a header to filter by a list of
+   values, or press **Pause** to stop the rows from moving. **By address**, **By domain**
+   and **By subnet** collapse the history into one row per target.
 3. **Record a dump.** With **process only** checked, the file keeps the traffic of
    the selected process. Start it, play, and the recording stops 15 seconds after the
-   game exits.
+   game exits. The file is compacted by default and split into parts when it is large.
 4. **Export** a report, JSON or the table, or open the dump in Wireshark and filter
    with `frame.comment contains "game.exe"`.
 
 <details>
 <summary>More screenshots</summary>
 <br>
+
+**Filter by lists**: values of a column with counters, domains nested under their
+base domain.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/filters-en-dark.png">
+  <img alt="List filter on the domain column with nested subdomains and active filter chips" src="docs/images/filters-en-light.png">
+</picture>
 
 **By address**: one row per target with the session count and total traffic.
 
@@ -120,11 +137,12 @@ PktMon/ETW engine. Details are in [docs/windows.md](docs/windows.md).
   <img alt="By address view: CDN addresses with session counts and total traffic" src="docs/images/by-address-en-light.png">
 </picture>
 
-**Dumps**: where files are saved and what has been recorded.
+**Dumps**: where files are saved, the status of each one and a summary by domain and
+subnet.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/dumps-en-dark.png">
-  <img alt="Dumps panel with the dump folder and recorded .pcapng files" src="docs/images/dumps-en-light.png">
+  <img alt="Dumps panel with file statuses, processing buttons and a summary by domain and subnet" src="docs/images/dumps-en-light.png">
 </picture>
 
 </details>

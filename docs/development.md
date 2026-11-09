@@ -9,6 +9,11 @@
   [README](../README.md#linux).
 - For the Windows build on Linux: `gcc-mingw-w64-x86-64`, `binutils-mingw-w64-x86-64`
   and, for tests, Wine 10 or newer.
+- For the build on Windows: Visual Studio Build Tools, or the GNU toolchain with
+  MinGW-w64, see [Windows](#windows).
+
+The repository keeps LF line endings on every system, `.gitattributes` makes sure of it.
+Shell scripts would break with CRLF, which Git for Windows applies by default.
 
 ## Build and run
 
@@ -41,7 +46,8 @@ packaging/smoke.sh target/release/sockettrail   # starts the binary and checks t
 On Linux, after building, run `python3 packaging/recording-smoke.py target/release/sockettrail`.
 This replaces dumpcap with a synthetic source and captures no real traffic. It checks
 repeat starts, concurrent stop/start, repeat stops, filtering failure, capture exit and
-recording startup failure. Temporary files are removed afterwards. Linux CI runs it too.
+recording startup failure, the table API and the processing of recorded dumps. Temporary
+files are removed afterwards. Linux CI runs it too.
 
 Regression checklist:
 
@@ -50,6 +56,9 @@ Regression checklist:
 - Reused TCP tuples do not relabel old counters with a new process.
 - Capture exit and recording failures are visible in the API and UI.
 - Filtering failure preserves the source and reports its actual scope.
+- Capture losses become warnings and do not cancel filtering.
+- A late packet of a closed socket and a flickering TCP row keep the owner.
+- Dumps of earlier versions can be filtered, compacted and split.
 - Noninitial IPv4 fragments do not create invented connections.
 
 ## Windows
@@ -57,15 +66,26 @@ Regression checklist:
 Windows packaging checks that the exe uses the GUI subsystem and cannot create a
 console on startup. Capture uses only the own PktMon/ETW engine.
 
-Cross-compiling uses mingw-w64, and `.cargo/config.toml` sets Wine as the runner, so
-tests of the Windows code run on Linux:
+Cross-compiling uses mingw-w64. The Wine runner is set by an environment variable, so
+the same target runs natively on Windows and under Wine on Linux:
 
 ```sh
 cargo build --release --target x86_64-pc-windows-gnu
-cargo test --target x86_64-pc-windows-gnu
+CARGO_TARGET_X86_64_PC_WINDOWS_GNU_RUNNER=wine cargo test --target x86_64-pc-windows-gnu
 packaging/smoke.sh wine target/x86_64-pc-windows-gnu/release/sockettrail.exe
 make win
 ```
+
+To build on Windows without Visual Studio, install the GNU toolchain and MinGW-w64:
+
+```powershell
+rustup toolchain install stable-x86_64-pc-windows-gnu
+winget install BrechtSanders.WinLibs.POSIX.MSVCRT
+cargo +stable-x86_64-pc-windows-gnu test -- --include-ignored
+```
+
+GCC 16 prints `.rsrc merge failure: multiple non-default manifests` while linking. It is
+a message of the local linker, the exe runs normally, and release builds use MSVC.
 
 Wine 9 from the Ubuntu repositories does not report the owner PID in the socket table:
 use WineHQ 10 or newer. On real Windows run `cargo test -- --include-ignored`: it adds a
